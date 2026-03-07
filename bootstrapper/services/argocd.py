@@ -3,6 +3,7 @@ import click
 import paramiko
 
 from bootstrapper.deploy import helm as helm_module
+from bootstrapper.deploy import manifests
 from bootstrapper.deploy import ssh as ssh_utils
 from bootstrapper.deploy.helm import DEPLOY_DIR
 from bootstrapper.services import authentik as authentik_module
@@ -78,41 +79,19 @@ def _apply_argocd_sso_secrets(
     forgejo_api_token: str,
 ) -> None:
     """Apply the three Secrets Argo CD needs for SSO and SCM discovery."""
-    # The $oidc.authentik.clientSecret reference in argocd-cm resolves from argocd-secret,
-    # not from a custom secret. Patch argocd-secret directly so Argo CD can read it.
-    manifest = f"""\
-apiVersion: v1
-kind: Secret
-metadata:
-  name: argocd-secret
-  namespace: argocd
-stringData:
-  oidc.authentik.clientSecret: {oidc_client_secret}
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: platform-forgejo-token
-  namespace: argocd
-stringData:
-  token: {forgejo_api_token}
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: forgejo-repo-creds
-  namespace: argocd
-  labels:
-    argocd.argoproj.io/secret-type: repo-creds
-stringData:
-  type: git
-  url: https://{forgejo_domain}/
-  username: {forgejo_admin_username}
-  password: {forgejo_api_token}
-"""
     remote_path = f"{DEPLOY_DIR}/argocd-sso-secrets.yaml"
     ssh_utils.run(client, f"mkdir -p {DEPLOY_DIR}")
-    ssh_utils.upload(client, manifest, remote_path)
+    ssh_utils.upload(
+        client,
+        manifests.render(
+            'k8s/argocd-sso-secrets.yaml.j2',
+            oidc_client_secret=oidc_client_secret,
+            forgejo_api_token=forgejo_api_token,
+            forgejo_domain=forgejo_domain,
+            forgejo_admin_username=forgejo_admin_username,
+        ),
+        remote_path,
+    )
     ssh_utils.run(client, f"k3s kubectl apply -f {remote_path}")
     click.echo("  Applied Argo CD SSO secrets.")
 

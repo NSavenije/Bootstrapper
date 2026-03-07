@@ -7,6 +7,7 @@ import paramiko
 import requests
 
 from bootstrapper.deploy import helm as helm_module
+from bootstrapper.deploy import manifests
 from bootstrapper.deploy import ssh as ssh_utils
 from bootstrapper.deploy.helm import DEPLOY_DIR
 
@@ -223,11 +224,9 @@ def deploy_runner(
     forgejo_domain: str,
 ) -> None:
     """Deploy the Forgejo Actions runner as a k8s Deployment in kube-system."""
-    from jinja2 import Environment, PackageLoader
-
     click.echo("  Deploying Forgejo Actions runner to k3s...")
-    env = Environment(loader=PackageLoader('bootstrapper', 'templates'))
-    manifest = env.get_template('k8s/runner.yaml.j2').render(
+    manifest = manifests.render(
+        'k8s/runner.yaml.j2',
         runner_token=runner_token,
         forgejo_url=forgejo_url,
         forgejo_domain=forgejo_domain,
