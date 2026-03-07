@@ -1,0 +1,171 @@
+name: Provision Team Landing Zone
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'teams/**.yaml'
+
+jobs:
+  provision:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Install kubectl + python-yaml
+        run: |
+          curl -sfLO "https://dl.k8s.io/release/$(curl -sfL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl && mv kubectl /usr/local/bin/kubectl
+          apt-get update -q && apt-get install -y -q python3-yaml
+
+      - name: Find changed team files
+        id: changed
+        run: |
+          git diff --name-only HEAD~1 HEAD -- 'teams/*.yaml' > /tmp/changed-teams.txt
+          cat /tmp/changed-teams.txt
+
+      - name: Set up kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBECONFIG }}" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+
+      - name: Provision each changed team
+        env:
+          FORGEJO_URL: ${{ vars.FORGEJO_URL }}
+          FORGEJO_DOMAIN: ${{ vars.FORGEJO_DOMAIN }}
+          FORGEJO_TOKEN: ${{ secrets.PLATFORM_TOKEN }}
+          PACKAGE_PULL_TOKEN: ${{ secrets.PACKAGE_PULL_TOKEN }}
+        run: |
+          while IFS= read -r team_file; do
+            [ -z "$team_file" ] && continue
+            echo "Provisioning: $team_file"
+
+            TEAM_NAME=$(python3 -c "import yaml; d=yaml.safe_load(open('$team_file')); print(d['name'])")
+            TIER=$(python3 -c "import yaml; d=yaml.safe_load(open('$team_file')); print(d.get('tier','application'))")
+            FORGEJO_ORG=$(python3 -c "import yaml; d=yaml.safe_load(open('$team_file')); print(d['forgejo_org'])")
+            AUTHENTIK_GROUP=$(python3 -c "import yaml; d=yaml.safe_load(open('$team_file')); print(d['authentik'])")
+            NS_DEV="${TEAM_NAME}-dev"
+            NS_PRD="${TEAM_NAME}-prd"
+
+            echo "Team: $TEAM_NAME | Tier: $TIER | Org: $FORGEJO_ORG | NS: $NS_DEV / $NS_PRD"
+
+            # 1. Create k8s namespaces + RBAC for both environments
+            for ENV in dev prd; do
+              NS="${TEAM_NAME}-${ENV}"
+              sed "s/\${NAMESPACE}/$NS/g; s/\${TEAM}/$TEAM_NAME/g; s/\${AUTHENTIK_GROUP}/$AUTHENTIK_GROUP/g" \
+                k8s-templates/namespace-template.yaml | kubectl apply -f -
+              sed "s/\${NAMESPACE}/$NS/g; s/\${TEAM}/$TEAM_NAME/g; s/\${AUTHENTIK_GROUP}/$AUTHENTIK_GROUP/g" \
+                k8s-templates/rbac-template.yaml | kubectl apply -f -
+            done
+
+            # 2. Create Argo CD AppProject (tier-appropriate permissions)
+            PROJECT_TEMPLATE="k8s-templates/argocd-project-${TIER}.yaml"
+            if [ ! -f "$PROJECT_TEMPLATE" ]; then
+              PROJECT_TEMPLATE="k8s-templates/argocd-project-application.yaml"
+            fi
+            sed "s/\${TEAM}/$TEAM_NAME/g" "$PROJECT_TEMPLATE" | kubectl apply -f -
+
+            # 3. Create forgejo-registry ImagePullSecret in both namespaces
+            # Uses PACKAGE_PULL_TOKEN (scoped read:package token) not PLATFORM_TOKEN (no package scope)
+            for NS in "$NS_DEV" "$NS_PRD"; do
+              kubectl create secret docker-registry forgejo-registry \
+                --docker-server="https://${FORGEJO_DOMAIN}/" \
+                --docker-username=siteadmin \
+                --docker-password="$PACKAGE_PULL_TOKEN" \
+                --namespace="$NS" \
+                --dry-run=client -o yaml | kubectl apply -f -
+            done
+
+            # 4. Create dev ApplicationSet (auto-sync)
+            sed "s|\${TEAM}|$TEAM_NAME|g; s|\${FORGEJO_ORG}|$FORGEJO_ORG|g; s|\${FORGEJO_DOMAIN}|$FORGEJO_DOMAIN|g" \
+              k8s-templates/appset-dev-template.yaml | kubectl apply -f -
+
+            # 5. Create prd ApplicationSet (manual sync)
+            sed "s|\${TEAM}|$TEAM_NAME|g; s|\${FORGEJO_ORG}|$FORGEJO_ORG|g; s|\${FORGEJO_DOMAIN}|$FORGEJO_DOMAIN|g" \
+              k8s-templates/appset-prd-template.yaml | kubectl apply -f -
+
+            # 6. Create Forgejo org (idempotent)
+            HTTP_STATUS=$(curl -s -o /tmp/org-response.json -w "%{http_code}" -X POST "$FORGEJO_URL/api/v1/orgs" \
+              -H "Authorization: token $FORGEJO_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "{\"username\": \"$FORGEJO_ORG\", \"visibility\": \"private\"}")
+            if [ "$HTTP_STATUS" = "201" ]; then
+              echo "Org $FORGEJO_ORG created."
+            elif [ "$HTTP_STATUS" = "422" ]; then
+              echo "Org $FORGEJO_ORG already exists, continuing."
+            else
+              echo "Org creation failed (HTTP $HTTP_STATUS):"
+              cat /tmp/org-response.json
+              exit 1
+            fi
+
+            echo "Done: $TEAM_NAME"
+          done < /tmp/changed-teams.txt
+
+      - name: Rebuild Argo CD RBAC from all teams
+        run: |
+          python3 - << 'PYEOF'
+          import glob, yaml, json, subprocess
+
+          policies = []
+          groups = ['g, platform-admins, role:admin']
+
+          for f in sorted(glob.glob('teams/*.yaml')):
+              d = yaml.safe_load(open(f))
+              name = d['name']
+              grp = d.get('authentik', f'{name}-devs')
+              policies += [
+                  f'p, role:{name}, applications, *, {name}/*, allow',
+                  f'p, role:{name}, logs, get, {name}/*, allow',
+                  f'p, role:{name}, exec, create, {name}/*, allow',
+              ]
+              groups.append(f'g, {grp}, role:{name}')
+
+          policy_csv = '\n'.join(policies + groups) + '\n'
+
+          patch = json.dumps({
+              'data': {
+                  'policy.default': 'role:readonly',
+                  'policy.csv': policy_csv,
+              }
+          })
+
+          with open('/tmp/argocd-rbac-patch.json', 'w') as fh:
+              fh.write(patch)
+
+          print('RBAC policy:')
+          print(policy_csv)
+          PYEOF
+
+          kubectl patch configmap argocd-rbac-cm -n argocd \
+            --type merge \
+            --patch-file /tmp/argocd-rbac-patch.json
+          echo "argocd-rbac-cm updated."
+
+      - name: Sync Forgejo group-team-map from all teams
+        run: |
+          MAP=$(python3 -c "
+          import glob, json, yaml
+          m = {}
+          for f in glob.glob('teams/*.yaml'):
+              d = yaml.safe_load(open(f))
+              org = d.get('forgejo_org')
+              grp = d.get('authentik')
+              if org and grp:
+                  m[grp] = {org: ['Owners']}
+          print(json.dumps(m))
+          ")
+          echo "Group-team map: $MAP"
+
+          AUTH_ID=$(kubectl exec -n forgejo deploy/forgejo -- forgejo admin auth list 2>/dev/null \
+            | awk 'NR>1 && $2=="authentik" {print $1}' | head -1)
+          [ -z "$AUTH_ID" ] && { echo "No authentik auth source found, skipping."; exit 0; }
+
+          echo "forgejo admin auth update-oauth --id ${AUTH_ID} --group-team-map '${MAP}' --group-team-map-removal" \
+            | kubectl exec -n forgejo deploy/forgejo -i -- sh
+          echo "group-team-map updated (auth id=$AUTH_ID)."

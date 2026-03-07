@@ -1,0 +1,6 @@
+click~=8.3.1
+requests~=2.32.0
+pyyaml~=6.0.3
+hcloud~=2.0
+paramiko~=3.5
+jinja2~=3.1

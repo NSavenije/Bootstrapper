@@ -1,0 +1,32 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: ${TEAM}-prd
+  namespace: argocd
+spec:
+  generators:
+  - scmProvider:
+      gitea:
+        owner: ${FORGEJO_ORG}
+        api: https://${FORGEJO_DOMAIN}/
+        tokenRef:
+          secretName: platform-forgejo-token
+          key: token
+      filters:
+        - pathsExist: ["k8s"]
+  template:
+    metadata:
+      name: '{{repository}}-prd'
+      namespace: argocd
+    spec:
+      project: ${TEAM}
+      source:
+        repoURL: 'https://${FORGEJO_DOMAIN}/{{organization}}/{{repository}}'
+        targetRevision: HEAD
+        path: k8s
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: ${TEAM}-prd
+      syncPolicy:
+        syncOptions:
+          - CreateNamespace=false

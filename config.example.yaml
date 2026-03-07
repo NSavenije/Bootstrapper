@@ -1,0 +1,38 @@
+# Bootstrapper config — copy to config.yaml and fill in your values.
+provider: hetzner
+api_token: "YOUR_HETZNER_API_TOKEN"
+
+# SSH keys: public key is uploaded to Hetzner, private key is used for deployment SSH.
+ssh_key: "your-key.pub"
+ssh_private_key: "your-key"
+
+# Hetzner server options
+server_type: cpx21        # run: bootstrapper server-types  to list available types
+server_name: forgejo-authentik-server
+location: nbg1            # nbg1 (Nuremberg), fsn1 (Falkenstein), hel1 (Helsinki)
+
+# Docker image tags
+forgejo_version: "latest"
+authentik_version: "2024.10.5"
+
+forgejo:
+  admin_username: "siteadmin"   # avoid reserved names: admin, root, git
+  admin_password: "CHANGE_ME"
+  domain: "git.yourdomain.nl"
+  email: "admin@yourdomain.nl"
+
+authentik:
+  admin_username: "admin"       # informational only; Authentik bootstrap user is always 'akadmin'
+  admin_password: "CHANGE_ME"
+  domain: "iam.yourdomain.nl"
+  email: "admin@yourdomain.nl"
+  admin_group: "forgejo-admins" # members of this group get Forgejo admin rights via SSO
+  groups:                       # groups to create in Authentik (idempotent)
+    - forgejo-admins
+    - platform-devs
+    - website-devs
+    - platform-readers
+    - website-readers
+
+# k8s / platform services
+argocd_domain: "argocd.yourdomain.nl"   # required; Argo CD web UI

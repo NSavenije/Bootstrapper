@@ -1,0 +1,18 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: ${TEAM}
+  namespace: argocd
+spec:
+  description: "Landing zone for team ${TEAM}"
+  sourceRepos:
+    - '*'
+  destinations:
+    - namespace: ${TEAM}-dev
+      server: https://kubernetes.default.svc
+    - namespace: ${TEAM}-prd
+      server: https://kubernetes.default.svc
+  clusterResourceWhitelist: []
+  namespaceResourceWhitelist:
+    - group: '*'
+      kind: '*'

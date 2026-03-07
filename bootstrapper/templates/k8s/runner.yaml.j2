@@ -1,0 +1,95 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: forgejo-runner-config
+  namespace: kube-system
+data:
+  config.yaml: |
+    container:
+      options: "-v /var/run/docker.sock:/var/run/docker.sock"
+      valid_volumes:
+        - /var/run/docker.sock
+    runner:
+      envs:
+        GITEA_SERVER_URL: "https://{{ forgejo_domain }}"
+        GITHUB_SERVER_URL: "https://{{ forgejo_domain }}"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: forgejo-runner-token
+  namespace: kube-system
+stringData:
+  token: "{{ runner_token }}"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: forgejo-runner-data
+  namespace: kube-system
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: forgejo-runner
+  namespace: kube-system
+  labels:
+    app: forgejo-runner
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: forgejo-runner
+  template:
+    metadata:
+      labels:
+        app: forgejo-runner
+    spec:
+      containers:
+        - name: runner
+          image: data.forgejo.org/forgejo/runner:11
+          workingDir: /data
+          securityContext:
+            runAsUser: 0
+          command:
+            - sh
+            - -c
+            - |
+              if [ ! -f /data/.runner ]; then
+                forgejo-runner register --no-interactive \
+                  --token "$RUNNER_TOKEN" \
+                  --name platform-runner \
+                  --instance {{ forgejo_url }} \
+                  --labels docker,ubuntu-latest
+              fi
+              exec forgejo-runner daemon --config /etc/runner/config.yaml
+          env:
+            - name: RUNNER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: forgejo-runner-token
+                  key: token
+          volumeMounts:
+            - name: runner-data
+              mountPath: /data
+            - name: docker-sock
+              mountPath: /var/run/docker.sock
+            - name: runner-config
+              mountPath: /etc/runner
+      volumes:
+        - name: runner-data
+          persistentVolumeClaim:
+            claimName: forgejo-runner-data
+        - name: docker-sock
+          hostPath:
+            path: /var/run/docker.sock
+        - name: runner-config
+          configMap:
+            name: forgejo-runner-config

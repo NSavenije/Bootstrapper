@@ -1,0 +1,23 @@
+# Secrets and state — never commit these
+config.yaml
+.bootstrapper-state.yaml
+
+# SSH keys
+claude
+claude.pub
+*.pem
+id_rsa
+id_ed25519
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+build/
+dist/
+
+# Editor
+.vscode/
+.idea/
