@@ -40,55 +40,18 @@ def install_forgejo(
     """Install Forgejo via Helm with Traefik Ingress and cert-manager TLS."""
     click.echo("  Installing Forgejo via Helm...")
     # OCI chart — no helm repo add needed
-    values = {
-        "gitea": {  # official Forgejo chart uses 'gitea' key for backward compat
-            "admin": {
-                "username": admin_username,
-                "password": admin_password,
-                "email": admin_email,
-            },
-            "config": {
-                "server": {
-                    "DOMAIN": domain,
-                    "ROOT_URL": f"https://{domain}",
-                    "SSH_DOMAIN": domain,
-                    "SSH_PORT": "2222",
-                    "SSH_LISTEN_PORT": "22",
-                },
-                "security": {
-                    "INSTALL_LOCK": "true",
-                },
-            },
-        },
-        "image": {
-            "tag": version,
-        },
-        "ingress": {
-            "enabled": True,
-            "className": "traefik",
-            "annotations": {
-                "cert-manager.io/cluster-issuer": cluster_issuer,
-                "traefik.ingress.kubernetes.io/router.entrypoints": "websecure",
-                "traefik.ingress.kubernetes.io/router.tls": "true",
-            },
-            "hosts": [
-                {
-                    "host": domain,
-                    "paths": [{"path": "/", "pathType": "Prefix"}],
-                }
-            ],
-            "tls": [{"secretName": "forgejo-tls", "hosts": [domain]}],
-        },
-        "service": {
-            "ssh": {
-                "type": "LoadBalancer",
-                "port": 2222,
-            },
-        },
-        "persistence": {"enabled": True, "size": "10Gi"},
-    }
-
-    helm_module.upgrade_install(client, "forgejo", "oci://code.forgejo.org/forgejo-helm/forgejo", "forgejo", values)
+    helm_module.upgrade_install(
+        client, "forgejo", "oci://code.forgejo.org/forgejo-helm/forgejo", "forgejo",
+        manifests.render(
+            'helm/forgejo-values.yaml.j2',
+            domain=domain,
+            admin_username=admin_username,
+            admin_password=admin_password,
+            admin_email=admin_email,
+            version=version,
+            cluster_issuer=cluster_issuer,
+        ),
+    )
     click.echo("  Forgejo installed.")
 
 

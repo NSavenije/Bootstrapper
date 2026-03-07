@@ -1,0 +1,37 @@
+global:
+  env:
+    - name: AUTHENTIK_HOST
+      value: https://{{ domain }}
+
+authentik:
+  secret_key: {{ secret_key }}
+  bootstrap_password: {{ admin_password }}
+  bootstrap_email: {{ admin_email }}
+  bootstrap_token: {{ bootstrap_token }}
+  postgresql:
+    password: {{ db_password }}
+
+server:
+  ingress:
+    enabled: true
+    ingressClassName: traefik
+    annotations:
+      cert-manager.io/cluster-issuer: {{ cluster_issuer }}
+      traefik.ingress.kubernetes.io/router.entrypoints: websecure
+      traefik.ingress.kubernetes.io/router.tls: "true"
+    hosts:
+      - {{ domain }}
+    tls:
+      - secretName: authentik-tls
+        hosts:
+          - {{ domain }}
+
+postgresql:
+  enabled: true
+  auth:
+    password: {{ db_password }}
+    database: authentik
+    username: authentik
+
+redis:
+  enabled: true

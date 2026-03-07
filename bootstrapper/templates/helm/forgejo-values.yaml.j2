@@ -1,0 +1,43 @@
+gitea:  # official Forgejo chart uses 'gitea' key for backward compat
+  admin:
+    username: {{ admin_username }}
+    password: {{ admin_password }}
+    email: {{ admin_email }}
+  config:
+    server:
+      DOMAIN: {{ domain }}
+      ROOT_URL: https://{{ domain }}
+      SSH_DOMAIN: {{ domain }}
+      SSH_PORT: "2222"
+      SSH_LISTEN_PORT: "22"
+    security:
+      INSTALL_LOCK: "true"
+
+image:
+  tag: {{ version }}
+
+ingress:
+  enabled: true
+  className: traefik
+  annotations:
+    cert-manager.io/cluster-issuer: {{ cluster_issuer }}
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+  hosts:
+    - host: {{ domain }}
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: forgejo-tls
+      hosts:
+        - {{ domain }}
+
+service:
+  ssh:
+    type: LoadBalancer
+    port: 2222
+
+persistence:
+  enabled: true
+  size: 10Gi

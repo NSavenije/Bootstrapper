@@ -20,26 +20,14 @@ def install_argocd(
     """
     click.echo("  Installing Argo CD via Helm...")
     helm_module.add_repo(client, "argo", "https://argoproj.github.io/argo-helm")
-
-    values = {
-        "server": {
-            "extraArgs": ["--insecure"],
-            "ingress": {
-                "enabled": True,
-                "ingressClassName": "traefik",
-                "annotations": {
-                    "cert-manager.io/cluster-issuer": cluster_issuer,
-                    "traefik.ingress.kubernetes.io/router.entrypoints": "websecure",
-                    "traefik.ingress.kubernetes.io/router.tls": "true",
-                },
-                "hostname": argocd_domain,
-                "tls": True,
-                "servicePort": 80,
-            },
-        },
-    }
-
-    helm_module.upgrade_install(client, "argocd", "argo/argo-cd", "argocd", values)
+    helm_module.upgrade_install(
+        client, "argocd", "argo/argo-cd", "argocd",
+        manifests.render(
+            'helm/argocd-values.yaml.j2',
+            argocd_domain=argocd_domain,
+            cluster_issuer=cluster_issuer,
+        ),
+    )
     click.echo("  Argo CD installed.")
 
 

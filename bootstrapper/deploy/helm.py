@@ -27,7 +27,7 @@ def upgrade_install(
     release: str,
     chart: str,
     namespace: str,
-    values: dict,
+    values: dict | str,
     *,
     create_namespace: bool = True,
     wait: bool = True,
@@ -37,8 +37,9 @@ def upgrade_install(
     """Run `helm upgrade --install` with values written to a temp file on the server.
 
     Using a temp file avoids shell-quoting issues with complex values structures.
+    `values` may be a pre-rendered YAML string (from a Jinja2 template) or a dict.
     """
-    values_yaml = yaml.dump(values, default_flow_style=False)
+    values_yaml = values if isinstance(values, str) else yaml.dump(values, default_flow_style=False)
     values_path = f"{DEPLOY_DIR}/helm-values-{release}.yaml"
 
     ssh_utils.run(client, f"mkdir -p {DEPLOY_DIR}")

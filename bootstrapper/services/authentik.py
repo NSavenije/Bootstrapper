@@ -3,6 +3,7 @@ import click
 import paramiko
 
 from bootstrapper.deploy import helm as helm_module
+from bootstrapper.deploy import manifests
 from bootstrapper.deploy import ssh as ssh_utils
 
 DEFAULT_GROUPS = [
@@ -29,47 +30,19 @@ def install_authentik(
     """Install Authentik via Helm with Traefik Ingress, cert-manager TLS, and embedded DB/Redis."""
     click.echo("  Installing Authentik via Helm...")
     helm_module.add_repo(client, "authentik", "https://charts.goauthentik.io")
-
-    values = {
-        "global": {
-            "env": [{"name": "AUTHENTIK_HOST", "value": f"https://{domain}"}],
-        },
-        "authentik": {
-            "secret_key": secret_key,
-            "bootstrap_password": admin_password,
-            "bootstrap_email": admin_email,
-            "bootstrap_token": bootstrap_token,
-            "postgresql": {
-                "password": db_password,
-            },
-        },
-        "server": {
-            "ingress": {
-                "enabled": True,
-                "ingressClassName": "traefik",
-                "annotations": {
-                    "cert-manager.io/cluster-issuer": cluster_issuer,
-                    "traefik.ingress.kubernetes.io/router.entrypoints": "websecure",
-                    "traefik.ingress.kubernetes.io/router.tls": "true",
-                },
-                "hosts": [domain],
-                "tls": [{"secretName": "authentik-tls", "hosts": [domain]}],
-            },
-        },
-        "postgresql": {
-            "enabled": True,
-            "auth": {
-                "password": db_password,
-                "database": "authentik",
-                "username": "authentik",
-            },
-        },
-        "redis": {
-            "enabled": True,
-        },
-    }
-
-    helm_module.upgrade_install(client, "authentik", "authentik/authentik", "authentik", values)
+    helm_module.upgrade_install(
+        client, "authentik", "authentik/authentik", "authentik",
+        manifests.render(
+            'helm/authentik-values.yaml.j2',
+            domain=domain,
+            secret_key=secret_key,
+            bootstrap_token=bootstrap_token,
+            admin_password=admin_password,
+            admin_email=admin_email,
+            db_password=db_password,
+            cluster_issuer=cluster_issuer,
+        ),
+    )
     click.echo("  Authentik installed.")
 
 
