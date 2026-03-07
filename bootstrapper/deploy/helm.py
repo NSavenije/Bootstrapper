@@ -45,15 +45,20 @@ def upgrade_install(
     ssh_utils.run(client, f"mkdir -p {DEPLOY_DIR}")
     ssh_utils.upload(client, values_yaml, values_path)
 
-    cmd = (
-        f"KUBECONFIG={KUBECONFIG} helm upgrade --install {release} {chart}"
-        f" --namespace {namespace}"
-        f"{' --create-namespace' if create_namespace else ''}"
-        f"{' --wait' if wait else ''}"
-        f" --timeout {timeout}"
-        f"{f' --version {version}' if version else ''}"
-        f" -f {values_path}"
-    )
+    parts = [
+        f"KUBECONFIG={KUBECONFIG}",
+        f"helm upgrade --install {release} {chart}",
+        f"--namespace {namespace}",
+        f"--timeout {timeout}",
+        f"-f {values_path}",
+    ]
+    if create_namespace:
+        parts.append("--create-namespace")
+    if wait:
+        parts.append("--wait")
+    if version:
+        parts.append(f"--version {version}")
+    cmd = " ".join(parts)
     click.echo(f"  helm upgrade --install {release} {chart} (namespace: {namespace})...")
     ssh_utils.run(client, cmd)
     click.echo(f"  {release} installed/upgraded.")

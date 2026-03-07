@@ -89,7 +89,7 @@ def start_curl_pod(client: paramiko.SSHClient) -> None:
     run(
         client,
         f"k3s kubectl run {CURL_POD_NAME} -n {CURL_POD_NS} "
-        f"--image=curlimages/curl:latest --restart=Never -- sleep 7200",
+        f"--image=curlimages/curl:8.17.0 --restart=Never -- sleep 7200",
     )
     run(
         client,

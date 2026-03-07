@@ -7,7 +7,7 @@ from . import ssh as ssh_utils
 def install_docker(client: paramiko.SSHClient) -> None:
     """Install Docker and the Compose plugin on the remote server.
 
-    Docker is still needed on the host for the Forgejo Actions runner,
+    Docker is needed on the host for the Forgejo Actions runner,
     which mounts /var/run/docker.sock to run job containers.
     """
     click.echo("  Installing Docker...")
