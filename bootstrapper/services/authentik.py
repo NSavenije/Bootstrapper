@@ -2,6 +2,7 @@ import time
 import click
 import paramiko
 
+from bootstrapper.deploy import helm as helm_module
 from bootstrapper.deploy import ssh as ssh_utils
 
 DEFAULT_GROUPS = [
@@ -13,6 +14,63 @@ DEFAULT_GROUPS = [
 ]
 
 _BASE = "http://authentik-server.authentik.svc.cluster.local/api/v3"
+
+
+def install_authentik(
+    client: paramiko.SSHClient,
+    domain: str,
+    secret_key: str,
+    bootstrap_token: str,
+    admin_password: str,
+    admin_email: str,
+    db_password: str,
+    cluster_issuer: str = "letsencrypt-prod",
+) -> None:
+    """Install Authentik via Helm with Traefik Ingress, cert-manager TLS, and embedded DB/Redis."""
+    click.echo("  Installing Authentik via Helm...")
+    helm_module.add_repo(client, "authentik", "https://charts.goauthentik.io")
+
+    values = {
+        "global": {
+            "env": [{"name": "AUTHENTIK_HOST", "value": f"https://{domain}"}],
+        },
+        "authentik": {
+            "secret_key": secret_key,
+            "bootstrap_password": admin_password,
+            "bootstrap_email": admin_email,
+            "bootstrap_token": bootstrap_token,
+            "postgresql": {
+                "password": db_password,
+            },
+        },
+        "server": {
+            "ingress": {
+                "enabled": True,
+                "ingressClassName": "traefik",
+                "annotations": {
+                    "cert-manager.io/cluster-issuer": cluster_issuer,
+                    "traefik.ingress.kubernetes.io/router.entrypoints": "websecure",
+                    "traefik.ingress.kubernetes.io/router.tls": "true",
+                },
+                "hosts": [domain],
+                "tls": [{"secretName": "authentik-tls", "hosts": [domain]}],
+            },
+        },
+        "postgresql": {
+            "enabled": True,
+            "auth": {
+                "password": db_password,
+                "database": "authentik",
+                "username": "authentik",
+            },
+        },
+        "redis": {
+            "enabled": True,
+        },
+    }
+
+    helm_module.upgrade_install(client, "authentik", "authentik/authentik", "authentik", values)
+    click.echo("  Authentik installed.")
 
 
 def wait_for_authentik(client: paramiko.SSHClient, bootstrap_token: str, timeout: int = 300, interval: int = 10) -> None:
@@ -84,64 +142,105 @@ def sync_akadmin(client: paramiko.SSHClient, bootstrap_token: str, admin_passwor
     click.echo("  akadmin password and email synced.")
 
 
-def configure_oauth_provider(client: paramiko.SSHClient, bootstrap_token: str, forgejo_domain: str) -> tuple[str, str]:
-    """
-    Create an OAuth2 provider + application in Authentik for Forgejo.
+def create_oauth_provider(
+    ssh: paramiko.SSHClient,
+    bootstrap_token: str,
+    name: str,
+    slug: str,
+    app_name: str,
+    redirect_uris: list[dict],
+) -> tuple[str, str]:
+    """Create or update an Authentik OAuth2 provider + application.
+
+    Idempotent: updates the provider if one with the given name already exists.
     Returns (client_id, client_secret).
     """
     headers = {"Authorization": f"Bearer {bootstrap_token}", "Content-Type": "application/json"}
 
-    scope_pks = _get_scope_mappings(client, _BASE, headers, ["openid", "email", "profile"])
-    scope_pks.append(_get_or_create_groups_scope_mapping(client, _BASE, headers))
+    scope_pks = _get_scope_mappings(ssh, _BASE, headers, ["openid", "email", "profile"])
+    scope_pks.append(_get_or_create_groups_scope_mapping(ssh, _BASE, headers))
 
-    provider_payload = {
-        "name": "Forgejo",
-        "authorization_flow": _get_default_authorization_flow(client, _BASE, headers),
-        "redirect_uris": [
-            {
-                "matching_mode": "strict",
-                "url": f"https://{forgejo_domain}/user/oauth2/authentik/callback",
-            }
-        ],
+    payload = {
+        "name": name,
+        "authorization_flow": _get_default_authorization_flow(ssh, _BASE, headers),
+        "invalidation_flow": _get_default_invalidation_flow(ssh, _BASE, headers),
+        "signing_key": _get_default_signing_key(ssh, _BASE, headers),
         "sub_mode": "hashed_user_id",
         "include_claims_in_id_token": True,
-        "signing_key": _get_default_signing_key(client, _BASE, headers),
-        "invalidation_flow": _get_default_invalidation_flow(client, _BASE, headers),
         "property_mappings": scope_pks,
+        "redirect_uris": redirect_uris,
     }
 
-    # Re-use existing provider so client_id/secret stay stable across re-runs.
-    existing = ssh_utils.cluster_curl(client, f"{_BASE}/providers/oauth2/?name=Forgejo", headers=headers)
-    existing.raise_for_status()
-    results = existing.json().get("results", [])
-    if results:
-        provider_pk = results[0]["pk"]
-        click.echo("  Updating existing Authentik OAuth2 provider for Forgejo...")
-        r = ssh_utils.cluster_curl(client, f"{_BASE}/providers/oauth2/{provider_pk}/", method='PATCH', headers=headers, json_body=provider_payload)
-        if not r.ok:
-            raise RuntimeError(f"Authentik provider update failed ({r.status_code}): {r.text}")
-        provider = r.json()
-    else:
-        click.echo("  Creating Authentik OAuth2 provider for Forgejo...")
-        r = ssh_utils.cluster_curl(client, f"{_BASE}/providers/oauth2/", method='POST', headers=headers, json_body=provider_payload)
-        if not r.ok:
-            raise RuntimeError(f"Authentik provider creation failed ({r.status_code}): {r.text}")
-        provider = r.json()
+    r = ssh_utils.cluster_curl(ssh, f"{_BASE}/providers/oauth2/?name={name}", headers=headers)
+    r.raise_for_status()
+    results = r.json().get("results", [])
 
+    if results:
+        pk = results[0]["pk"]
+        click.echo(f"  Updating Authentik provider for {name}...")
+        r = ssh_utils.cluster_curl(ssh, f"{_BASE}/providers/oauth2/{pk}/", method='PATCH', headers=headers, json_body=payload)
+        if not r.ok:
+            raise RuntimeError(f"Provider update failed ({r.status_code}): {r.text}")
+    else:
+        click.echo(f"  Creating Authentik provider for {name}...")
+        r = ssh_utils.cluster_curl(ssh, f"{_BASE}/providers/oauth2/", method='POST', headers=headers, json_body=payload)
+        if not r.ok:
+            raise RuntimeError(f"Provider creation failed ({r.status_code}): {r.text}")
+
+    provider = r.json()
     provider_pk = provider["pk"]
     client_id = provider["client_id"]
-    client_secret = provider["client_secret"]
+    client_secret = provider.get("client_secret", "")
 
-    # Ensure the application exists (idempotent — create only if missing).
-    existing_app = ssh_utils.cluster_curl(client, f"{_BASE}/core/applications/?slug=forgejo", headers=headers)
-    existing_app.raise_for_status()
-    if not existing_app.json().get("results"):
-        click.echo("  Creating Authentik application for Forgejo...")
-        r = ssh_utils.cluster_curl(client, f"{_BASE}/core/applications/", method='POST', headers=headers, json_body={"name": "Forgejo", "slug": "forgejo", "provider": provider_pk})
+    r = ssh_utils.cluster_curl(ssh, f"{_BASE}/core/applications/?slug={slug}", headers=headers)
+    r.raise_for_status()
+    if not r.json().get("results"):
+        r = ssh_utils.cluster_curl(
+            ssh, f"{_BASE}/core/applications/", method='POST', headers=headers,
+            json_body={"name": app_name, "slug": slug, "provider": provider_pk},
+        )
         if not r.ok:
-            raise RuntimeError(f"Authentik application creation failed ({r.status_code}): {r.text}")
+            raise RuntimeError(f"Application creation failed ({r.status_code}): {r.text}")
+        click.echo(f"  Created Authentik application for {name}.")
 
     return client_id, client_secret
+
+
+def configure_oauth_provider(client: paramiko.SSHClient, bootstrap_token: str, forgejo_domain: str) -> tuple[str, str]:
+    """Create an OAuth2 provider + application in Authentik for Forgejo.
+    Returns (client_id, client_secret).
+    """
+    return create_oauth_provider(
+        client, bootstrap_token,
+        name="Forgejo", slug="forgejo", app_name="Forgejo",
+        redirect_uris=[{
+            "matching_mode": "strict",
+            "url": f"https://{forgejo_domain}/user/oauth2/authentik/callback",
+        }],
+    )
+
+
+def configure_k3s_oidc(ssh: paramiko.SSHClient, bootstrap_token: str) -> None:
+    """Create Authentik OIDC provider for Kubernetes.
+
+    kube-apiserver requires HTTPS for the OIDC issuer URL, so we cannot
+    configure k3s during bootstrap (DNS/TLS not live yet). The provider is
+    created here so it is ready once DNS propagates. After DNS/TLS is live:
+
+      echo 'kube-apiserver-arg:
+        - oidc-issuer-url=https://<authentik_domain>/application/o/kubernetes/
+        - oidc-client-id=<client_id>
+        - oidc-username-claim=email
+        - oidc-groups-claim=groups' >> /etc/rancher/k3s/config.yaml
+      /usr/local/bin/k3s-killall.sh && systemctl start k3s
+    """
+    click.echo("  Creating Authentik OIDC provider for Kubernetes...")
+    create_oauth_provider(
+        ssh, bootstrap_token,
+        name="kubernetes", slug="kubernetes", app_name="Kubernetes",
+        redirect_uris=[{"matching_mode": "strict", "url": "http://localhost:8000"}],
+    )
+    click.echo("  Authentik k8s OIDC provider created (k3s wired after DNS/TLS is live).")
 
 
 def create_groups(client: paramiko.SSHClient, bootstrap_token: str, group_names: list[str]) -> None:

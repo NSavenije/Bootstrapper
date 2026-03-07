@@ -7,6 +7,7 @@ from bootstrapper.backends.local import LocalBackend
 from bootstrapper.deploy import docker as docker_module
 from bootstrapper.deploy import helm as helm_module
 from bootstrapper.deploy import ssh as ssh_module
+from bootstrapper.services import argocd as argocd_module
 from bootstrapper.services import authentik as authentik_module
 from bootstrapper.services import forgejo as forgejo_module
 from bootstrapper.services import k8s as k8s_module
@@ -70,11 +71,11 @@ def provision(config_path, provider, forgejo_version, authentik_version, ssh_key
 
     # --- Step 3: Install platform services via Helm ---
     click.echo("\n[3/6] Installing Helm, cert-manager, Forgejo and Authentik...")
-    forgejo_version = docker_module.resolve_forgejo_version(cfg['forgejo_version'])
+    forgejo_version = forgejo_module.resolve_forgejo_version(cfg['forgejo_version'])
     helm_module.install_helm(ssh)
     k8s_module.restore_tls_secrets(ssh, state.get('tls_secrets', {}))
     cluster_issuer = k8s_module.install_cert_manager(ssh, authentik_cfg['email'])
-    k8s_module.install_forgejo(
+    forgejo_module.install_forgejo(
         ssh,
         forgejo_cfg['domain'],
         forgejo_cfg['admin_username'],
@@ -83,7 +84,7 @@ def provision(config_path, provider, forgejo_version, authentik_version, ssh_key
         forgejo_version,
         cluster_issuer=cluster_issuer,
     )
-    k8s_module.install_authentik(
+    authentik_module.install_authentik(
         ssh,
         authentik_cfg['domain'],
         gen['authentik_secret_key'],
@@ -157,9 +158,9 @@ def provision(config_path, provider, forgejo_version, authentik_version, ssh_key
 
         # --- Step 5: Install Argo CD + runner ---
         click.echo("\n[5/6] Installing Argo CD, configuring SSO and deploying runner...")
-        k8s_module.configure_k3s_oidc(ssh, gen['authentik_bootstrap_token'])
-        k8s_module.install_argocd(ssh, cfg['argocd_domain'], cluster_issuer=cluster_issuer)
-        k8s_module.configure_argocd_sso(
+        authentik_module.configure_k3s_oidc(ssh, gen['authentik_bootstrap_token'])
+        argocd_module.install_argocd(ssh, cfg['argocd_domain'], cluster_issuer=cluster_issuer)
+        argocd_module.configure_argocd_sso(
             ssh,
             gen['authentik_bootstrap_token'],
             authentik_cfg['domain'],
@@ -168,7 +169,7 @@ def provision(config_path, provider, forgejo_version, authentik_version, ssh_key
             forgejo_cfg['admin_username'],
             forgejo_api_token,
         )
-        k8s_module.deploy_runner(
+        forgejo_module.deploy_runner(
             ssh,
             runner_token,
             forgejo_url="http://forgejo-http.forgejo.svc.cluster.local:3000",
@@ -178,7 +179,7 @@ def provision(config_path, provider, forgejo_version, authentik_version, ssh_key
         # --- Step 6: Seed platform-config repository ---
         click.echo("\n[6/6] Seeding platform-config repository in Forgejo...")
         forgejo_module.create_platform_org(ssh, forgejo_api_token)
-        _seed_platform_config(ssh, forgejo_api_token, forgejo_cfg['domain'])
+        forgejo_module.seed_platform_config(ssh, forgejo_api_token, forgejo_cfg['domain'])
 
     finally:
         ssh_module.stop_curl_pod(ssh)
@@ -222,68 +223,6 @@ Post-setup:
   3. Configure platform-config repo secrets (KUBECONFIG, PLATFORM_TOKEN):
      https://{forgejo_cfg['domain']}/platform-team/platform-config/settings/secrets
 """)
-
-
-def _seed_platform_config(ssh, api_token: str, forgejo_domain: str) -> None:
-    """Create platform-team/platform-config repo in Forgejo and seed it with template files."""
-    import os
-    import base64
-
-    base = "http://forgejo-http.forgejo.svc.cluster.local:3000/api/v1"
-    headers = {"Authorization": f"token {api_token}", "Content-Type": "application/json"}
-
-    # Create repo (idempotent)
-    r = ssh_module.cluster_curl(
-        ssh,
-        f"{base}/orgs/platform-team/repos",
-        method='POST',
-        headers=headers,
-        json_body={
-            "name": "platform-config",
-            "description": "GitOps control plane for the developer platform",
-            "private": True,
-            "auto_init": True,
-            "default_branch": "main",
-        },
-    )
-    if r.status_code not in (201, 409):
-        raise RuntimeError(f"Failed to create platform-config repo ({r.status_code}): {r.text}")
-    if r.status_code == 409:
-        click.echo("  platform-config repo already exists, skipping file seeding.")
-        return
-    click.echo("  platform-config repo created.")
-
-    # Seed files from templates/platform-config/
-    templates_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), 'templates', 'platform-config'))
-
-    for root, dirs, files in os.walk(templates_dir):
-        dirs[:] = [d for d in dirs if d != '__pycache__']
-        for filename in files:
-            local_path = os.path.join(root, filename)
-            rel_path = os.path.relpath(local_path, templates_dir).replace('\\', '/')
-
-            with open(local_path, 'r', encoding='utf-8') as f:
-                content = f.read()
-
-            encoded = base64.b64encode(content.encode('utf-8')).decode('utf-8')
-            r = ssh_module.cluster_curl(
-                ssh,
-                f"{base}/repos/platform-team/platform-config/contents/{rel_path}",
-                method='POST',
-                headers=headers,
-                json_body={
-                    "message": f"Bootstrap: add {rel_path}",
-                    "content": encoded,
-                    "branch": "main",
-                },
-            )
-            if not r.ok:
-                if r.status_code == 422 and "already exists" in r.text:
-                    pass  # file was seeded in a previous run, skip silently
-                else:
-                    click.echo(f"  Warning: could not seed {rel_path}: {r.status_code} {r.text}")
-            else:
-                click.echo(f"  Seeded {rel_path}")
 
 
 @cli.command('server-types')
