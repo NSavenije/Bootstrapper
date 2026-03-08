@@ -51,6 +51,36 @@ def _wait_for_k3s(client: paramiko.SSHClient, timeout: int = 120, interval: int 
     raise TimeoutError(f"k3s node did not become Ready within {timeout}s")
 
 
+def wire_oidc(client: paramiko.SSHClient, authentik_domain: str) -> None:
+    """Append OIDC flags to k3s config and restart k3s (idempotent).
+
+    Must be run after DNS has propagated and TLS certificates are live,
+    because kube-apiserver validates the OIDC issuer URL over HTTPS.
+    """
+    already = ssh_utils.run(
+        client,
+        "grep -q 'oidc-issuer-url' /etc/rancher/k3s/config.yaml && echo yes || echo no",
+    ).strip()
+    if already == 'yes':
+        click.echo("  k3s OIDC already configured, skipping.")
+        return
+
+    issuer_url = f"https://{authentik_domain}/application/o/kubernetes/"
+    ssh_utils.run(client, (
+        f"printf 'kube-apiserver-arg:\\n"
+        f"  - oidc-issuer-url={issuer_url}\\n"
+        f"  - oidc-client-id=kubernetes\\n"
+        f"  - oidc-username-claim=email\\n"
+        f"  - oidc-groups-claim=groups\\n'"
+        f" >> /etc/rancher/k3s/config.yaml"
+    ))
+    click.echo("  Restarting k3s...")
+    ssh_utils.run(client, "/usr/local/bin/k3s-killall.sh && systemctl start k3s")
+    click.echo("  Waiting for k3s to become ready...")
+    _wait_for_k3s(client)
+    click.echo("  k3s OIDC wired.")
+
+
 _TLS_SECRETS = [
     ("forgejo", "forgejo-tls"),
     ("authentik", "authentik-tls"),

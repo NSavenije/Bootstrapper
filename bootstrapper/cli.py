@@ -14,7 +14,7 @@ from bootstrapper.services import k8s as k8s_module
 from bootstrapper.services import sso as sso_module
 
 
-@click.group()
+@click.group(context_settings={"help_option_names": ["-h", "--help"]})
 def cli():
     """Bootstrapper CLI for self-hosted platform provisioning."""
     pass
@@ -217,13 +217,26 @@ Admin credentials (saved to .bootstrapper-state.yaml):
 
 Post-setup:
   1. Add DNS records above, then TLS certificates will auto-provision via cert-manager.
-  2. After DNS propagates, wire k3s OIDC (SSH to server):
-     printf 'kube-apiserver-arg:\\n  - oidc-issuer-url=https://{authentik_cfg['domain']}/application/o/kubernetes/\\n  - oidc-client-id=kubernetes\\n  - oidc-username-claim=email\\n  - oidc-groups-claim=groups\\n' >> /etc/rancher/k3s/config.yaml
-     /usr/local/bin/k3s-killall.sh && systemctl start k3s
+  2. After DNS propagates, wire k3s OIDC:
+     bootstrapper wire-k3s-oidc --config {config_path}
   3. Configure platform-config repo secrets (KUBECONFIG, PLATFORM_TOKEN):
      https://{forgejo_cfg['domain']}/platform-team/platform-config/settings/secrets
 """)
 
+@cli.command('wire-k3s-oidc')
+@click.option('--ssh-key', 'ssh_key', type=click.Path(exists=True), default=None, help='SSH private key path (overrides config)')
+@click.option('--config', 'config_path', type=click.Path(exists=True), default='config.yaml', help='Path to YAML config file')
+def wire_k3s_oidc(ssh_key, config_path):
+    """Add OIDC flags to k3s config and restart k3s."""
+    cfg = cfg_module.load(config_path, {'ssh_key': ssh_key} if ssh_key else {})
+    domain = cfg['authentik']['domain']
+
+    state = secrets_module.load_state()
+    ssh = ssh_module.connect(state['server_ip'], cfg['ssh_private_key'])
+    try:
+        k8s_module.wire_oidc(ssh, domain)
+    finally:
+        ssh.close()
 
 @cli.command('server-types')
 @click.option('--api-token', required=True, envvar='HCLOUD_TOKEN', help='Hetzner API token')

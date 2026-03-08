@@ -3,7 +3,7 @@ import click
 import yaml
 
 
-def load(config_path: str | None, overrides: dict) -> dict:
+def load(config_path: str | None, overrides: dict | None) -> dict:
     """
     Load config from YAML file (if provided) and apply CLI overrides on top.
     Returns a fully resolved config dict.
