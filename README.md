@@ -98,7 +98,7 @@ Re-running is fully idempotent: the server, secrets, and API objects are all reu
 ## Installation
 
 ```bash
-git clone https://git.noudsavenije.nl/nerd/Bootstrapper
+git clone https://github.com/NSavenije/Bootstrapper.git
 cd Bootstrapper
 python -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
