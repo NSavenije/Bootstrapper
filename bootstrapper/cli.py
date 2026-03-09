@@ -154,6 +154,7 @@ def provision(config_path, provider, forgejo_version, authentik_version, ssh_key
         # Save service state
         state['forgejo_api_token'] = forgejo_api_token
         state['authentik_client_id'] = client_id
+        state['authentik_client_secret'] = client_secret
         secrets_module.save_state(state)
 
         # --- Step 5: Install Argo CD + runner ---
@@ -235,6 +236,14 @@ def wire_k3s_oidc(ssh_key, config_path):
     ssh = ssh_module.connect(state['server_ip'], cfg['ssh_private_key'])
     try:
         k8s_module.wire_oidc(ssh, domain)
+        sso_module.configure_forgejo_oauth_source(
+            ssh,
+            domain,
+            state['authentik_client_id'],
+            state['authentik_client_secret'],
+            admin_group=cfg['authentik'].get('admin_group', 'forgejo-admins'),
+            public=True,
+        )
     finally:
         ssh.close()
 

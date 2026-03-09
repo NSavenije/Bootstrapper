@@ -12,17 +12,22 @@ def configure_forgejo_oauth_source(
     client_id: str,
     client_secret: str,
     admin_group: str = "forgejo-admins",
+    *,
+    public: bool = False,
 ) -> None:
     """Register Authentik as an OAuth2 source in Forgejo via kubectl exec CLI.
 
-    Uses the internal cluster URL for the OIDC discovery endpoint so this works
-    before DNS/TLS is live. The discovery document still returns the public issuer
-    and endpoint URLs, which Forgejo uses for the actual login flow.
-    The Forgejo CLI is run inside the forgejo pod via kubectl exec + sh stdin.
+    During bootstrap (public=False) the internal cluster URL is used so this works
+    before DNS/TLS is live. Call again with public=True from wire-k3s-oidc once
+    DNS/TLS is up — the public discovery document returns the correct public
+    authorization_endpoint, which is what the browser ultimately redirects to.
     """
     click.echo("  Configuring Forgejo OAuth source -> Authentik...")
 
-    discover_url = "http://authentik-server.authentik.svc.cluster.local/application/o/forgejo/.well-known/openid-configuration"
+    if public:
+        discover_url = f"https://{authentik_domain}/application/o/forgejo/.well-known/openid-configuration"
+    else:
+        discover_url = "http://authentik-server.authentik.svc.cluster.local/application/o/forgejo/.well-known/openid-configuration"
 
     oauth_flags = (
         f" --provider openidConnect"
