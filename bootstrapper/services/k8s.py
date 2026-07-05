@@ -17,10 +17,7 @@ def install_k3s(client: paramiko.SSHClient) -> None:
     installation so the Helm controller applies it on first boot.
     HTTP traffic is automatically redirected to HTTPS.
     """
-    click.echo("  Installing k3s...")
-
-    # Upload Traefik config before k3s starts so Helm controller picks it up immediately.
-    # Traefik uses host ports 80/443 by default in k3s — we just add HTTP→HTTPS redirect.
+    # Always (re-)upload the Traefik config so it reflects the current template.
     ssh_utils.run(client, f"mkdir -p {MANIFESTS_DIR}")
     ssh_utils.upload(
         client,
@@ -28,17 +25,27 @@ def install_k3s(client: paramiko.SSHClient) -> None:
         f"{MANIFESTS_DIR}/traefik-config.yaml",
     )
 
+    try:
+        ssh_utils.run(client, "k3s --version")
+        click.echo("  k3s already installed, ensuring service is running...")
+        ssh_utils.run(client, "systemctl start k3s")
+        _wait_for_k3s(client)
+        return
+    except RuntimeError:
+        pass
+
+    click.echo("  Installing k3s...")
     # Ensure no stale config (e.g. OIDC flags from a previous failed run)
     ssh_utils.run(client, "mkdir -p /etc/rancher/k3s && truncate -s 0 /etc/rancher/k3s/config.yaml")
-
     ssh_utils.run(client, "curl -sfL https://get.k3s.io | sh -")
+    ssh_utils.run(client, "systemctl start k3s")
     click.echo("  k3s installed. Waiting for node to become Ready...")
 
     _wait_for_k3s(client)
     click.echo("  k3s is Ready.")
 
 
-def _wait_for_k3s(client: paramiko.SSHClient, timeout: int = 120, interval: int = 5) -> None:
+def _wait_for_k3s(client: paramiko.SSHClient, timeout: int = 300, interval: int = 5) -> None:
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
@@ -139,6 +146,31 @@ def restore_tls_secrets(client: paramiko.SSHClient, saved: dict) -> None:
         )
         ssh_utils.run(client, f"k3s kubectl apply -f {path}")
         click.echo(f"    {name} ({ns}) restored.")
+
+
+def install_cert_manager_selfsigned(client: paramiko.SSHClient) -> str:
+    """Install cert-manager with a self-signed ClusterIssuer for local/offline use.
+
+    Returns the ClusterIssuer name to use in Helm ingress annotations.
+    """
+    click.echo("  Installing cert-manager (self-signed issuer for local)...")
+    add_repo(client, "jetstack", "https://charts.jetstack.io")
+    upgrade_install(
+        client, "cert-manager", "jetstack/cert-manager", "cert-manager",
+        {"crds": {"enabled": True}},
+    )
+
+    issuer_name = "selfsigned"
+    issuer_path = f"{DEPLOY_DIR}/selfsigned-issuer.yaml"
+    ssh_utils.run(client, f"mkdir -p {DEPLOY_DIR}")
+    ssh_utils.upload(
+        client,
+        manifests.render('k8s/selfsigned-issuer.yaml.j2'),
+        issuer_path,
+    )
+    ssh_utils.run(client, f"k3s kubectl apply -f {issuer_path}")
+    click.echo("  cert-manager ready (self-signed).")
+    return issuer_name
 
 
 def install_cert_manager(client: paramiko.SSHClient, admin_email: str) -> str:

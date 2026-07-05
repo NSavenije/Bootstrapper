@@ -1,4 +1,11 @@
+import sys
 import click
+
+# Force UTF-8 output on Windows so Unicode in remote command output doesn't crash.
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+if hasattr(sys.stderr, 'reconfigure'):
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 
 from bootstrapper import config as cfg_module
 from bootstrapper import secrets as secrets_module
@@ -15,9 +22,13 @@ from bootstrapper.services import sso as sso_module
 
 
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
-def cli():
+@click.option('-v', '--verbose', is_flag=True, default=False, help='Print every SSH command and its output.')
+@click.pass_context
+def cli(ctx, verbose):
     """Bootstrapper CLI for self-hosted platform provisioning."""
-    pass
+    ctx.ensure_object(dict)
+    ctx.obj['verbose'] = verbose
+    ssh_module.set_verbose(verbose)
 
 
 @cli.command()
@@ -46,11 +57,13 @@ def provision(config_path, provider, forgejo_version, authentik_version, ssh_key
 
     # --- Step 1: Provision server ---
     click.echo(f"\n[1/6] Provisioning server on {cfg['provider']}...")
-    if state.get('server_ip'):
+    # For local, provision_server is instant (returns configured host) — always call it
+    # so the state file's IP from a previous cloud run is never accidentally reused.
+    if cfg['provider'] != 'local' and state.get('server_ip'):
         click.echo(f"  Reusing existing server at {state['server_ip']} (from state file).")
         server_ip = state['server_ip']
     else:
-        backend = _get_backend(cfg['provider'])
+        backend = _get_backend(cfg)
         server_ip, server_id = backend.provision_server(
             api_token=cfg['api_token'],
             ssh_key_path=cfg['ssh_key'],
@@ -65,7 +78,11 @@ def provision(config_path, provider, forgejo_version, authentik_version, ssh_key
 
     # --- Step 2: SSH + install Docker + k3s ---
     click.echo("\n[2/6] Connecting via SSH, installing Docker and k3s...")
-    ssh = ssh_module.connect(server_ip, cfg['ssh_private_key'])
+    ssh = ssh_module.connect(
+        server_ip, cfg['ssh_private_key'],
+        username=cfg['ssh_user'],
+        use_sudo=(cfg['ssh_user'] != 'root'),
+    )
     docker_module.install_docker(ssh)
     k8s_module.install_k3s(ssh)
 
@@ -74,7 +91,10 @@ def provision(config_path, provider, forgejo_version, authentik_version, ssh_key
     forgejo_version = forgejo_module.resolve_forgejo_version(cfg['forgejo_version'])
     helm_module.install_helm(ssh)
     k8s_module.restore_tls_secrets(ssh, state.get('tls_secrets', {}))
-    cluster_issuer = k8s_module.install_cert_manager(ssh, authentik_cfg['email'])
+    if cfg['provider'] == 'local':
+        cluster_issuer = k8s_module.install_cert_manager_selfsigned(ssh)
+    else:
+        cluster_issuer = k8s_module.install_cert_manager(ssh, authentik_cfg['email'])
     forgejo_module.install_forgejo(
         ssh,
         forgejo_cfg['domain'],
@@ -196,18 +216,49 @@ def provision(config_path, provider, forgejo_version, authentik_version, ssh_key
     # --- Summary ---
     argocd_domain = cfg['argocd_domain']
     blog_line = f"\n  Blog:      https://{cfg['blog_domain']}" if cfg.get('blog_domain') else ""
-    blog_dns = f"\n  {cfg['blog_domain']}  ->  {server_ip}" if cfg.get('blog_domain') else ""
+    blog_hosts = f"\n  {server_ip}  {cfg['blog_domain']}" if cfg.get('blog_domain') else ""
+
+    if cfg['provider'] == 'local':
+        tls_note = "Certs are self-signed — browsers will warn; add an exception or import the CA."
+        hosts_block = (
+            f"Add these entries to /etc/hosts (or your local DNS):\n"
+            f"  {server_ip}  {forgejo_cfg['domain']}\n"
+            f"  {server_ip}  {authentik_cfg['domain']}\n"
+            f"  {server_ip}  {argocd_domain}{blog_hosts}"
+        )
+        post_setup = (
+            f"Post-setup:\n"
+            f"  1. Add /etc/hosts entries above.\n"
+            f"  2. Wire k3s OIDC (no DNS propagation needed for self-signed):\n"
+            f"     bootstrapper wire-k3s-oidc --config {config_path}\n"
+            f"  3. Configure platform-config repo secrets (KUBECONFIG, PLATFORM_TOKEN):\n"
+            f"     https://{forgejo_cfg['domain']}/platform-team/platform-config/settings/secrets"
+        )
+    else:
+        blog_dns = f"\n  {cfg['blog_domain']}  ->  {server_ip}" if cfg.get('blog_domain') else ""
+        tls_note = "TLS certificates will auto-provision via cert-manager after DNS propagates."
+        hosts_block = (
+            f"Server IP:  {server_ip}\n"
+            f"Add these DNS A records:\n"
+            f"  {forgejo_cfg['domain']}  ->  {server_ip}\n"
+            f"  {authentik_cfg['domain']}  ->  {server_ip}\n"
+            f"  {argocd_domain}  ->  {server_ip}{blog_dns}"
+        )
+        post_setup = (
+            f"Post-setup:\n"
+            f"  1. Add DNS records above, then {tls_note}\n"
+            f"  2. After DNS propagates, wire k3s OIDC:\n"
+            f"     bootstrapper wire-k3s-oidc --config {config_path}\n"
+            f"  3. Configure platform-config repo secrets (KUBECONFIG, PLATFORM_TOKEN):\n"
+            f"     https://{forgejo_cfg['domain']}/platform-team/platform-config/settings/secrets"
+        )
 
     click.echo(f"""
 Bootstrap complete!
 
-Server IP:  {server_ip}
-Add these DNS A records:
-  {forgejo_cfg['domain']}  ->  {server_ip}
-  {authentik_cfg['domain']}  ->  {server_ip}
-  {argocd_domain}  ->  {server_ip}{blog_dns}
+{hosts_block}
 
-Services (available after DNS + TLS):
+Services:
   Forgejo:   https://{forgejo_cfg['domain']}
   Authentik: https://{authentik_cfg['domain']}
   Argo CD:   https://{argocd_domain}{blog_line}
@@ -216,12 +267,7 @@ Admin credentials (saved to .bootstrapper-state.yaml):
   Forgejo:   {forgejo_cfg['admin_username']} / {forgejo_cfg['admin_password']}
   Authentik: akadmin / {authentik_cfg['admin_password']}
 
-Post-setup:
-  1. Add DNS records above, then TLS certificates will auto-provision via cert-manager.
-  2. After DNS propagates, wire k3s OIDC:
-     bootstrapper wire-k3s-oidc --config {config_path}
-  3. Configure platform-config repo secrets (KUBECONFIG, PLATFORM_TOKEN):
-     https://{forgejo_cfg['domain']}/platform-team/platform-config/settings/secrets
+{post_setup}
 """)
 
 @cli.command('wire-k3s-oidc')
@@ -233,7 +279,11 @@ def wire_k3s_oidc(ssh_key, config_path):
     domain = cfg['authentik']['domain']
 
     state = secrets_module.load_state()
-    ssh = ssh_module.connect(state['server_ip'], cfg['ssh_private_key'])
+    ssh = ssh_module.connect(
+        state['server_ip'], cfg['ssh_private_key'],
+        username=cfg['ssh_user'],
+        use_sudo=(cfg['ssh_user'] != 'root'),
+    )
     try:
         k8s_module.wire_oidc(ssh, domain)
         sso_module.configure_forgejo_oauth_source(
@@ -261,9 +311,10 @@ def server_types(api_token):
         click.echo(f"{t.name:<12} {t.cores:>5} {t.memory:>9.1f} {t.disk:>10}  {t.architecture}")
 
 
-def _get_backend(provider: str):
+def _get_backend(cfg: dict):
+    provider = cfg['provider']
     if provider == 'hetzner':
         return HetznerBackend()
     if provider == 'local':
-        return LocalBackend()
+        return LocalBackend(cfg.get('local', {}))
     raise click.UsageError(f"Unknown provider '{provider}'. Supported: hetzner, local")

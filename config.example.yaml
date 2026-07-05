@@ -1,4 +1,10 @@
 # Bootstrapper config — copy to config.yaml and fill in your values.
+# Two provider options: hetzner (cloud) or local (WSL2 / local VM).
+# Uncomment the section that applies and fill in your values.
+
+# ─────────────────────────────────────────────
+# OPTION A: Hetzner Cloud
+# ─────────────────────────────────────────────
 provider: hetzner
 api_token: "YOUR_HETZNER_API_TOKEN"
 
@@ -11,10 +17,6 @@ server_type: cpx21        # run: bootstrapper server-types  to list available ty
 server_name: forgejo-authentik-server
 location: nbg1            # nbg1 (Nuremberg), fsn1 (Falkenstein), hel1 (Helsinki)
 
-# Docker image tags
-forgejo_version: "latest"
-authentik_version: "2024.10.5"
-
 forgejo:
   admin_username: "siteadmin"   # avoid reserved names: admin, root, git
   admin_password: "CHANGE_ME"
@@ -22,7 +24,7 @@ forgejo:
   email: "admin@yourdomain.nl"
 
 authentik:
-  admin_username: "admin"       # informational only; Authentik bootstrap user is always 'akadmin'
+  admin_username: "akadmin"     # informational only; Authentik bootstrap user is always 'akadmin'
   admin_password: "CHANGE_ME"
   domain: "iam.yourdomain.nl"
   email: "admin@yourdomain.nl"
@@ -34,5 +36,52 @@ authentik:
     - platform-readers
     - website-readers
 
-# k8s / platform services
 argocd_domain: "argocd.yourdomain.nl"   # required; Argo CD web UI
+
+
+# ─────────────────────────────────────────────
+# OPTION B: Local (WSL2)
+# ─────────────────────────────────────────────
+# Deploys into a local WSL2 instance. No cloud account or API token needed.
+# Certs are self-signed (browser will warn once; click through).
+#
+# Domains use nip.io — a public wildcard DNS where anything.127.0.0.1.nip.io
+# resolves to 127.0.0.1. No /etc/hosts editing needed.
+#
+# One-time WSL2 setup (run these inside WSL2 before first provision):
+#   sudo apt install openssh-server
+#   sudo service ssh start                      # or: sudo systemctl enable --now ssh
+#   mkdir -p ~/.ssh && chmod 700 ~/.ssh
+#   echo "$(cat /path/to/your/key.pub)" >> ~/.ssh/authorized_keys
+#   chmod 600 ~/.ssh/authorized_keys
+#   echo "noud ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/noud
+#
+# provider: local
+# local:
+#   host: 127.0.0.1      # WSL2 ports are forwarded to Windows localhost automatically
+#   ssh_user: noud       # your WSL2 username
+#
+# ssh_private_key: "C:/Users/noud/.ssh/your-key"   # Windows path to private key
+#
+# forgejo:
+#   admin_username: "siteadmin"
+#   admin_password: "CHANGE_ME"
+#   domain: "git.127.0.0.1.nip.io"
+#   email: "admin@local.dev"
+#
+# authentik:
+#   admin_username: "akadmin"
+#   admin_password: "CHANGE_ME"
+#   domain: "auth.127.0.0.1.nip.io"
+#   email: "admin@local.dev"
+#   admin_group: "forgejo-admins"
+#   groups:
+#     - forgejo-admins
+#     - platform-devs
+#
+# argocd_domain: "argocd.127.0.0.1.nip.io"
+
+
+# Docker image tags (both providers)
+forgejo_version: "latest"
+authentik_version: "2024.10.5"

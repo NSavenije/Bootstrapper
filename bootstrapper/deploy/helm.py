@@ -46,8 +46,8 @@ def upgrade_install(
     ssh_utils.upload(client, values_yaml, values_path)
 
     parts = [
-        f"KUBECONFIG={KUBECONFIG}",
         f"helm upgrade --install {release} {chart}",
+        f"--kubeconfig {KUBECONFIG}",
         f"--namespace {namespace}",
         f"--timeout {timeout}",
         f"-f {values_path}",

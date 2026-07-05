@@ -28,17 +28,28 @@ def load(config_path: str | None, overrides: dict | None) -> dict:
     cfg.setdefault('argocd_domain', None)
     cfg.setdefault('blog_domain', None)
 
+    # Local-provider defaults: no cloud token/key needed; SSH user may differ from root
+    if cfg['provider'] == 'local':
+        local = cfg.get('local', {})
+        cfg.setdefault('api_token', '')
+        cfg.setdefault('ssh_key', '')
+        cfg['ssh_user'] = local.get('ssh_user', 'root')
+    else:
+        cfg['ssh_user'] = 'root'
+
     _validate(cfg)
     return cfg
 
 
 def _validate(cfg: dict) -> None:
     """Fail fast with clear messages for missing required fields."""
+    is_local = cfg.get('provider') == 'local'
     required = {
-        'api_token': 'Cloud provider API token (--api-token or config api_token)',
-        'ssh_key': 'SSH public key path (--ssh-key or config ssh_key)',
         'ssh_private_key': 'SSH private key path (config ssh_private_key)',
     }
+    if not is_local:
+        required['api_token'] = 'Cloud provider API token (--api-token or config api_token)'
+        required['ssh_key'] = 'SSH public key path (--ssh-key or config ssh_key)'
     for key, description in required.items():
         if not cfg.get(key):
             click.echo(f"Error: missing required config: {description}", err=True)
@@ -50,6 +61,9 @@ def _validate(cfg: dict) -> None:
             if not svc.get(field):
                 click.echo(f"Error: missing required config: {service}.{field}", err=True)
                 sys.exit(1)
+        if len(svc.get('admin_password', '')) < 8:
+            click.echo(f"Error: {service}.admin_password must be at least 8 characters", err=True)
+            sys.exit(1)
 
     if not cfg.get('argocd_domain'):
         click.echo("Error: missing required config: argocd_domain (e.g. argocd.yourdomain.nl)", err=True)
