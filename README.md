@@ -6,8 +6,6 @@ Part of a larger vision: a fully EU-sovereign Internal Developer Platform (IDP) 
 
 ## Architecture
 
-### New architecture (current)
-
 Everything runs inside k3s. Traefik (built into k3s) handles ingress on host ports 80/443. cert-manager handles Let's Encrypt. Forgejo, Authentik, and Argo CD are Helm charts. The bootstrapper is day-0 only — after provisioning, all operations go through Argo CD GitOps.
 
 ```mermaid
@@ -88,8 +86,8 @@ Re-running is fully idempotent: the server, secrets, and API objects are all reu
 ## Prerequisites
 
 - Python 3.11+
-- A [Hetzner Cloud](https://www.hetzner.com/cloud) account and API token
-- An SSH key pair
+- A [Hetzner Cloud](https://www.hetzner.com/cloud) account and API token (not needed for the local provider)
+- An SSH key pair, stored outside the repo (e.g. in `~/.ssh`)
 - DNS A records pointing to your server (add these after the first run when the IP is printed):
   - `git.yourdomain.nl` → server IP
   - `iam.yourdomain.nl` → server IP

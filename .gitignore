@@ -1,13 +1,12 @@
 # Secrets and state — never commit these
-config.yaml
+config*.yaml
+!config.example.yaml
 .bootstrapper-state.yaml
 
-# SSH keys
-claude
-claude.pub
+# Keys never belong in the repo; these patterns are defense-in-depth only
 *.pem
-id_rsa
-id_ed25519
+*.key
+id_*
 
 # Python
 .venv/
