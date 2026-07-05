@@ -10,8 +10,8 @@ api_token: "YOUR_HETZNER_API_TOKEN"
 
 # SSH keys: public key is uploaded to Hetzner, private key is used for deployment SSH.
 # Keep keys outside the repo (e.g. in ~/.ssh) and reference them by absolute path.
-ssh_key: "C:/Users/you/.ssh/your-key.pub"      # or /home/you/.ssh/your-key.pub
-ssh_private_key: "C:/Users/you/.ssh/your-key"
+ssh_key: "/path/to/your/.ssh/your-key.pub"      # or /home/you/.ssh/your-key.pub
+ssh_private_key: "/path/to/your/.ssh/your-key"
 
 # Hetzner server options
 server_type: cpx21        # run: bootstrapper server-types  to list available types

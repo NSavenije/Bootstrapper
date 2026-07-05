@@ -3,11 +3,6 @@ config*.yaml
 !config.example.yaml
 .bootstrapper-state.yaml
 
-# Keys never belong in the repo; these patterns are defense-in-depth only
-*.pem
-*.key
-id_*
-
 # Python
 .venv/
 __pycache__/
