@@ -114,9 +114,13 @@ cp config.example.yaml config.yaml
 Key fields:
 
 ```yaml
+provider: hetzner         # hetzner or local
 api_token: "YOUR_HETZNER_API_TOKEN"
-ssh_key: "your-key.pub"
-ssh_private_key: "your-key"
+
+# Keep keys outside the repo (e.g. in ~/.ssh) and reference them by absolute path.
+ssh_key: "/path/to/your/.ssh/your-key.pub"
+ssh_private_key: "/path/to/your/.ssh/your-key"
+
 server_type: cpx21        # run: bootstrapper server-types  to list options
 location: nbg1            # nbg1 (Nuremberg), fsn1 (Falkenstein), hel1 (Helsinki)
 
@@ -130,11 +134,20 @@ authentik:
   admin_password: "CHANGE_ME"
   domain: "iam.yourdomain.nl"
   email: "admin@yourdomain.nl"
+  admin_group: "forgejo-admins" # members get Forgejo admin rights via SSO
+  groups:                       # groups to create in Authentik (idempotent)
+    - forgejo-admins
+    - platform-devs
 
-argocd_domain: "argocd.yourdomain.nl"
+argocd_domain: "argocd.yourdomain.nl"   # required; Argo CD web UI
+blog_domain: "blog.yourdomain.nl"       # optional; only included in the DNS summary
 ```
 
-> **Never commit `config.yaml`** — it contains secrets. It is gitignored by default.
+> **Never commit `config.yaml`** — it contains secrets. All `config*.yaml` files are gitignored by default (only `config.example.yaml` is tracked).
+
+### Local provider (WSL2 / any SSH-reachable host)
+
+For development you can provision into a local machine instead of Hetzner: set `provider: local` and point `local.host` / `local.ssh_user` at an SSH-reachable host (WSL2 works well). No cloud account or API token is needed, certificates are self-signed, and `*.127.0.0.1.nip.io` domains resolve to localhost without `/etc/hosts` edits. See the commented **Option B** section in `config.example.yaml` for the full setup, including the one-time WSL2 SSH preparation.
 
 ## Usage
 
@@ -142,8 +155,14 @@ argocd_domain: "argocd.yourdomain.nl"
 # Provision everything
 bootstrapper provision --config config.yaml
 
+# After DNS propagates: wire k3s OIDC and switch the Forgejo OAuth source public
+bootstrapper wire-k3s-oidc --config config.yaml
+
 # List available Hetzner server types
 bootstrapper server-types --api-token YOUR_TOKEN
+
+# Add -v to any command to print every SSH command and its output
+bootstrapper -v provision --config config.yaml
 ```
 
 After a successful run, add the DNS A records printed in the summary. Traefik and cert-manager obtain Let's Encrypt TLS certificates automatically on the first request.
@@ -180,30 +199,37 @@ App teams never touch platform-config. This is the handoff from bootstrapper to 
 ```
 app.py                          entry point
 bootstrapper/
-  cli.py                        Click commands (provision, server-types)
+  cli.py                        Click commands (provision, wire-k3s-oidc, server-types)
   config.py                     config loading and validation
   secrets.py                    secret generation and state persistence
   backends/
     base.py                     InfrastructureBackend abstract class
     hetzner.py                  Hetzner Cloud provisioning (hcloud SDK)
-    local.py                    local/no-op backend for dev/testing
+    local.py                    local backend (WSL2 / any SSH-reachable host)
   deploy/
     ssh.py                      paramiko SSH helpers + cluster_curl (curl pod pattern)
     docker.py                   Docker Engine install
     helm.py                     Helm install, repo management, upgrade_install
+    manifests.py                Jinja2 rendering for bootstrapper/templates/
   services/
-    forgejo.py                  Forgejo API client (admin user, token, runner token, org)
-    authentik.py                Authentik API client (OAuth2 provider, groups, akadmin sync)
-    k8s.py                      k3s, cert-manager, Forgejo/Authentik/Argo CD Helm installs, OIDC
+    forgejo.py                  Forgejo Helm install + API client (admin, tokens, orgs, seeding)
+    authentik.py                Authentik Helm install + API client (OAuth2 provider, groups, akadmin sync)
+    argocd.py                   Argo CD Helm install + Authentik SSO configuration
+    k8s.py                      k3s, cert-manager, TLS secret save/restore, k3s OIDC wiring
     sso.py                      Forgejo ↔ Authentik SSO wiring
   templates/
+    helm/                       Helm values (forgejo, authentik, argocd)
     k8s/
-      runner.yaml.j2            Forgejo Actions runner Deployment + PVC
+      runner.yaml.j2            Forgejo Actions runner Deployment + config + PVC
+      cluster-issuer.yaml.j2    Let's Encrypt ClusterIssuer
+      selfsigned-issuer.yaml.j2 self-signed ClusterIssuer (local provider)
+      traefik-config.yaml.j2    Traefik host-port configuration
+      argocd-sso-secrets.yaml.j2, tls-secret.yaml.j2
     platform-config/
       README.md                 Platform team onboarding guide
       .forgejo/workflows/
         provision-team.yml      Landing zone pipeline
-      k8s-templates/            sed-substitution templates for namespace/RBAC/AppProject
+      k8s-templates/            sed-substitution templates for namespace/RBAC/AppProject/AppSets
       teams/
         .gitkeep                Drop team YAML files here
 ```
@@ -217,3 +243,7 @@ kubectl exec -n authentik deploy/authentik-server -- ak create_recovery_key 1 ak
 ```
 
 Visit the printed URL at `https://iam.yourdomain.nl/recovery/use-token/...` to set a new password.
+
+## License
+
+[MIT](LICENSE)
