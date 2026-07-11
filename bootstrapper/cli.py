@@ -208,7 +208,11 @@ def provision(config_path, provider, forgejo_version, authentik_version, ssh_key
         forgejo_module.deploy_runner(
             ssh,
             runner_token,
-            forgejo_url="http://forgejo-http.forgejo.svc.cluster.local:3000",
+            # Register on the PUBLIC url, not cluster-internal DNS: CI jobs run as
+            # host-Docker sibling containers (not on the pod network), so the
+            # instance URL leaks into every job's github.server_url and must be
+            # resolvable + reachable from there (checkout, registry, API).
+            forgejo_url=f"https://{forgejo_cfg['domain']}",
             forgejo_domain=forgejo_cfg['domain'],
         )
 
@@ -533,7 +537,9 @@ def build_runner_image(config_path, ssh_key, server_ip):
         forgejo_module.deploy_runner(
             ssh,
             runner_token,
-            forgejo_url="http://forgejo-http.forgejo.svc.cluster.local:3000",
+            # Public url — CI jobs are host-Docker containers that can't resolve
+            # cluster DNS; the registration URL becomes each job's github.server_url.
+            forgejo_url=f"https://{cfg['forgejo']['domain']}",
             forgejo_domain=cfg['forgejo']['domain'],
         )
     finally:

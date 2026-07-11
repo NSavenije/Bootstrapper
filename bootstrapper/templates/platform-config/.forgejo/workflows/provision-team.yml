@@ -36,8 +36,11 @@ jobs:
 
       - name: Provision each changed team
         env:
-          FORGEJO_URL: ${{ vars.FORGEJO_URL }}
-          FORGEJO_DOMAIN: ${{ vars.FORGEJO_DOMAIN }}
+          # Stored Actions variable names must NOT start with FORGEJO_/GITEA_/GITHUB_
+          # (Forgejo rejects those as reserved), so the variables are FORGE_URL /
+          # FORGE_DOMAIN even though the in-job env vars keep their FORGEJO_ names.
+          FORGEJO_URL: ${{ vars.FORGE_URL }}
+          FORGEJO_DOMAIN: ${{ vars.FORGE_DOMAIN }}
           FORGEJO_TOKEN: ${{ secrets.PLATFORM_TOKEN }}
           PACKAGE_PULL_TOKEN: ${{ secrets.PACKAGE_PULL_TOKEN }}
         run: |

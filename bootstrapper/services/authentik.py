@@ -448,18 +448,39 @@ def _get_default_invalidation_flow(ssh: paramiko.SSHClient, base: str, headers: 
     return results[0]["pk"]
 
 
-def _get_scope_mappings(ssh: paramiko.SSHClient, base: str, headers: dict, scope_names: list[str]) -> list[str]:
-    """Return PKs of the built-in OAuth2 scope property mappings for the given scope names."""
-    r = ssh_utils.cluster_curl(ssh, f"{base}/propertymappings/all/", headers=headers)
-    r.raise_for_status()
+def _get_scope_mappings(
+    ssh: paramiko.SSHClient, base: str, headers: dict, scope_names: list[str],
+    timeout: int = 180, interval: int = 6,
+) -> list[str]:
+    """Return PKs of the built-in OAuth2 scope property mappings for the given scope names.
+
+    The default OAuth2 scope mappings are seeded by an Authentik worker blueprint
+    that can finish a few seconds *after* akadmin exists, so a fresh install has a
+    window where the user is ready but these mappings are not. Poll until every
+    requested scope is present rather than failing on that race. page_size is set
+    high so all mappings arrive in one page (the default would truncate).
+    """
     managed_keys = {f"goauthentik.io/providers/oauth2/scope-{n}" for n in scope_names}
-    pks = [
-        m["pk"] for m in r.json()["results"]
-        if m.get("managed") in managed_keys
-    ]
-    if not pks:
-        raise RuntimeError(f"No scope mappings found for {scope_names}. Is Authentik fully initialized?")
-    return pks
+    deadline = time.time() + timeout
+    found: dict[str, str] = {}
+    while True:
+        r = ssh_utils.cluster_curl(ssh, f"{base}/propertymappings/all/?page_size=1000", headers=headers)
+        r.raise_for_status()
+        found = {
+            m["managed"]: m["pk"]
+            for m in r.json()["results"]
+            if m.get("managed") in managed_keys
+        }
+        if len(found) == len(managed_keys):
+            return list(found.values())
+        if time.time() >= deadline:
+            missing = managed_keys - set(found)
+            raise RuntimeError(
+                f"Scope mappings still missing after {timeout}s: {sorted(missing)}. "
+                "Is Authentik fully initialized?"
+            )
+        click.echo(f"  Waiting for Authentik scope mappings ({len(found)}/{len(managed_keys)})...")
+        time.sleep(interval)
 
 
 def _get_default_signing_key(ssh: paramiko.SSHClient, base: str, headers: dict) -> str:

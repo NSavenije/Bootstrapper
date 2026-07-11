@@ -56,7 +56,10 @@ Set these in Forgejo: Repository Settings → Secrets and Variables.
 
 ## Variables
 
+Variable names must not start with `FORGEJO_`/`GITEA_`/`GITHUB_` (Forgejo rejects
+those as reserved), so these use a `FORGE_` prefix.
+
 | Variable | Example |
 |---|---|
-| `FORGEJO_URL` | `https://git.yourdomain.nl` |
-| `FORGEJO_DOMAIN` | `git.yourdomain.nl` |
+| `FORGE_URL` | `https://git.yourdomain.nl` |
+| `FORGE_DOMAIN` | `git.yourdomain.nl` |

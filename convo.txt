@@ -1,0 +1,337 @@
+Help me strategize. I am trying to do a feasibility study for a new IT Services company or branch within my current company. What I want to do is help companies or (semi-)governmental organizations to regain control over their data and compute. 10 years ago most everyone in the Netherlands moved either to Azure or AWS, now there is some lack of long term trust in the Americans. The sale of Solvinity (DigiD) to the US was blocked, so it is very zeitgeisty again. I want to think about potential customers, like municipalities, smaller financial services companies, online retailers, anyone basically who cares, but can't do it themselves. So no large banks, not the military for example.I want to think about scope. We should not necessarily always do Data, Compute AND IdP, office suite, SAP right? Most pressing is to get data back to own servers, stackit, ovh, scaleway or Dutch or European PaaS or SaaS. What should I explicitely not offer or what should not promote, but do if asked.Then lastly for now, I think I want to work out of the Netherlands.  I am not in a position to take on all the risk and all the work so I must involve my place of work to do this kinda stuff. They are great people, devops engineers, developers, investors even haha. I need a concrete business plan to start this up.Show lessJun 2Claude responded: Before I jump in, let me ground a couple of fast-moving things — the Solvinity situation, current Dutch government policy, and where AWS/Microsoft are with the…Architected sovereign cloud strategy across customer segments, service scope, and business modelArchitected sovereign cloud strategy across customer segments, service scope, and business modelBefore I jump in, let me ground a couple of fast-moving things — the Solvinity situation, current Dutch government policy, and where AWS/Microsoft are with their "sovereign" offerings, since those are the moving parts that will shape the pitch.Synthesized Dutch sovereignty market dynamics and competitive positioning strategySynthesized Dutch sovereignty market dynamics and competitive positioning strategyGood timing on this. The Solvinity block landed a week ago, the Dutch government now has a State Secretary literally titled "Digital Economy and Sovereignty," Amsterdam just published a 2026-2030 sourcing strategy that names US dependency as a strategic risk, and VNG's new GIBIT procurement rules default to open source. The political tailwind is real. But the competitive landscape has also moved fast: AWS European Sovereign Cloud went GA in January 2026 and is expanding from Germany into the Netherlands, Belgium and Portugal, and Microsoft has its own sovereign offering. So you're not first, and your differentiation has to be precise. Amazon
+Let me work through your three questions, then sketch a plan.
+Customers — who actually buys this
+Filter by three criteria together: they care about sovereignty, they have budget, and they can't DIY. Lots of organisations meet one or two; the intersection is smaller than it looks.
+Strong fits, in rough order of how I'd prioritise:
+
+Mid-size municipalities (20k–150k inhabitants). This is your sweet spot. 59% of municipal web apps run on US cloud infrastructure, and Amsterdam, Zaanstad, Ede and Den Bosch are already piloting. Smaller ones want to follow but lack in-house architects. Watch out for the "ravijnjaar" — 2026 is a budget-crunch year for municipalities, so deals will get scrutinised. Ictmagazine
+Waterschappen (21 of them) and provincies (12). Critical infrastructure, NIS2-scoped, smaller IT teams than the big cities, sovereignty mandates landing.
+Care institutions and regional hospitals. Patient data, NEN 7510, growing nervousness post-ICC-Microsoft-email incident. Not the academic hospitals (they have their own teams) — the regional and category hospitals.
+Pension funds and mid-size insurers. DORA compliance is a real lever here; sovereignty rides on the back of DORA conversations more easily than as a standalone pitch.
+Education middle layer. HBO institutions, MBO networks, individual schools (PO/VO koepels). SURF handles the top end; the rest is fragmented.
+Cultural/heritage and semi-public bodies. Archives, libraries, museums, branchverenigingen, ZBOs. Smaller budgets but the values fit is strongest, which makes them good early references.
+Notaries, mid-size law firms, accountants. KNB has been making noise about sovereignty.
+
+Push back on two of your suggestions:
+
+Online retailers — I'd skip them. Cost-driven, hyperscaler-native, sovereignty is not in their buying criteria unless they sell to government. The exception worth carving out: Dutch B2B SaaS companies whose customers are sovereignty-conscious (govtech, fintech, healthtech). They have a commercial reason to be EU-hosted, which is much easier to sell to than abstract values.
+"Smaller financial services" — qualify carefully. Asset managers and fintechs under DORA are good. But anything with a banking license drags in DNB scrutiny and timelines you don't want as a young company.
+
+Explicitly out of scope (you already said this, but worth being firm): big banks, defense/military, intelligence services, the very largest ministries. Not because they don't care, but because the sales cycles and clearance requirements will sink a small firm.
+Scope — what to offer and, more importantly, what not to
+Your instinct is right: data first, then compute, then stop. Here's how I'd structure the offering:
+Lead with: sovereignty assessment + migration of data and compute. That's the wedge. Concretely:
+
+Sovereignty Assessment (2–4 weeks, €15–30k). Inventory of US cloud dependencies, classification by CLOUD Act exposure / Schrems II risk / regulatory relevance (NIS2, DORA, AVG), migration roadmap with cost and complexity matrix per workload. This is your lead magnet. Cheap, high-margin, generates the bigger deal.
+Data migration. Object storage, databases, data warehouses, backups. Land on Dutch/EU providers — StackIT, OVHcloud, Scaleway, Leaseweb, Fuga, TransIP, Intermax, depending on workload fit.
+Compute migration. VMs and Kubernetes lift-and-shift, plus selective refactoring where the source uses proprietary AWS/Azure services (Lambda, Cosmos, etc.).
+Managed sovereign cloud operations. This is the recurring revenue. After migration, you run it for them. Patching, monitoring, optimisation, compliance reporting. This is what makes the LTV work.
+
+Offer if asked, but don't lead with:
+
+Identity (IdP). Entra ID is deeply embedded; a full rip-and-replace is months of pain. The right answer is usually federation: keep Entra for SSO, move sensitive workloads behind an EU IdP (Keycloak, or a managed Dutch offering), broker between them. Sell it as a hardening project, not a migration.
+PaaS components without hyperscaler equivalents — message queues, certain managed databases, search. You'll have to do these because real apps need them, but scope them per-project, don't sell them as a product line.
+
+Don't offer at all (or refer to partners):
+
+Office suite migration (M365 → Nextcloud/OnlyOffice/Collabora). Massive change management burden, productivity hit, user revolt risk. The Linux + MijnBureau pilots in 's-Hertogenbosch, Zaanstad, Ede and Amsterdam will run through end of 2026 — let that pilot mature and pick up follow-on work in 2027+ if the model proves out. For now, partner with someone like Nextcloud directly if a customer insists. Ictmagazine
+Email migration off Exchange/Gmail. Deliverability and address-book pain. Refer out.
+ERP/CRM/SAP. Not your business. SAP is German but customers run it on hyperscalers; the migration is an SAP-consultancy job, not a sovereignty job.
+Endpoint/MDM, network/SD-WAN. Adjacent but a different muscle.
+Application development. If your parent company already does this, fine, route it there. But don't position your new unit as a dev shop — it dilutes the message.
+Building your own datacenter or cloud. You're a migration and ops specialist, not an infrastructure provider. The capex is wrong for what you're trying to do, and you'd compete with your own partners.
+
+The discipline here is important. The incumbents — Centric, Schuberg Philis, KPN, the big four consultancies — will sell customers a full-stack story. Your edge is being focused, faster, and not trying to lock the customer into your own platform.
+Competitive positioning — this is the part I'd think hardest about
+The trap: AWS European Sovereign Cloud and Microsoft Sovereign Cloud will let many customers feel like they've "done sovereignty" without leaving. AWS ESC is operated by EU residents in the EU, but remains under overall Amazon US control with guardrails. The Solvinity case is precedent that this isn't enough for true sovereignty — the Dutch government cared about ownership at the corporate layer, not just where the engineers sit. Make that the spine of your pitch. Specifically: Cloud Security Alliance
+
+The CLOUD Act argument. US-owned entities can be compelled by US authorities regardless of where data sits. Reference the ICC prosecutor's email being cut by Microsoft on US orders — it's the perfect anecdote because it actually happened.
+The continuity argument. What if a US administration sanctions an EU entity? Can your provider still serve you? Hyperscaler sovereign clouds have not credibly answered this.
+The values argument. Customers in the public sector and adjacent are increasingly making this an explicit values choice. VNG's open-source default is signal.
+
+Don't oversell sovereignty as cheaper — it usually isn't, at least short-term. Sell it as risk reduction and option value. Intermax CEO Ludo Baauw has been honest that moving critical workloads takes at least 18 months and that full sovereignty short-term is unachievable; that honesty is itself a positioning asset. Binnenlands Bestuur
+Existing competitors to know and position against: Centric (now partnered with Uniserver building a Dutch private cloud, deep gemeenten relationships), Schuberg Philis (premium, enterprise), KPN Cloud, Intermax, Solvinity itself, Fundaments, plus the consultancies (Berenschot, M&I/Partners, PBLQ on the advisory side).
+The business plan
+Since you want to involve your employer rather than going solo, I'd structure this as an internal venture / new business unit, not a separate company. Lower personal risk, faster to start, you get the existing balance sheet and reputation for credibility. Pitch your employer roughly this:
+One-line value prop: "We help Dutch organisations move data and compute off US hyperscalers onto truly sovereign European infrastructure — assessment, migration, and managed operations."
+12-month plan:
+
+Months 0–2: validate. 15–20 customer discovery conversations across the target segments above. Not selling — listening. What's their stated sovereignty pressure, who's pushing it, what's their budget timeline, what would they pay for an assessment. Goal: two paid pilot assessments lined up.
+Months 2–4: build the wedge. Develop the Sovereignty Assessment as a productised offering — methodology, deliverable templates, classification framework, reference migration paths. Sign partnership agreements with 2–3 EU cloud providers (I'd start with StackIT + OVHcloud + one Dutch player like Leaseweb or Fuga). Hire or assign one senior architect plus one engagement lead.
+Months 4–8: execute first paid assessments. Two paying customers, learn fast, refine the methodology. Publish one anonymised case study + a public POV piece on sovereignty (the marketing flywheel).
+Months 8–12: convert to migration. At least one assessment should turn into a migration engagement. This is when you find out if the unit economics work — assessments are easy, migrations are where you learn whether your team can deliver at a margin.
+
+Team to start (minimum viable): lead architect (deep multi-cloud), engagement/project lead, two senior devops engineers (your employer's existing team can rotate in), part-time legal/compliance advisor (DORA, NIS2, AVG, Schrems II — you need this on-call). Sales: probably you, plus a network-driven exec for the first year. Don't hire a full sales team until you've done five engagements.
+Pricing model: assessment fixed-price, migration T&M with a not-to-exceed, managed operations subscription tied to environment size. Avoid pure outcome-based pricing in year one — too much execution risk.
+Risks to brief your employer on candidly:
+
+Hyperscaler sovereign offerings (AWS ESC, Microsoft Sovereign) will close some of the demand. The market is real but smaller than the discourse suggests.
+Long sales cycles in government (9–18 months) mean cash flow will be lumpy. You need either a big employer balance sheet behind you or a few private-sector early wins to bridge.
+Customers often don't have a central overview of where their data actually runs. This makes assessments useful but also means scope creep is constant. Binnenlands Bestuur
+Centric + Uniserver + Solvinity are big incumbents with government relationships you don't have. Win on speed, focus, and not being a generalist platform.
+Political winds can shift. If transatlantic relations warm, sovereignty cools. Build the business so it survives that — by being genuinely useful for compliance and resilience, not just for politics.
+
+Things to do in your first month, concretely:
+
+Read the Amsterdam Sourcing- en Cloudstrategie 2026–2030 cover to cover; it's a free roadmap of what's being procured.
+Read the NDS aanjaagteam Cloud publications and find out who's on it.
+Talk to VNG about how the new GIBIT rules will play out for smaller gemeenten.
+Approach StackIT, OVHcloud and one Dutch provider for partner conversations — they need migration partners and will often co-sell.
+Write one strong public piece (blog or LinkedIn) staking out your sovereignty position. This is how you get found by the right customers.
+
+Where do you want to go deeper next — the customer discovery script, the assessment methodology, partner choice, or the pitch to your employer's board?You said: Good write up, thanks.Good write up, thanks. I own a blog, blog.noudsavenije.nl, which  I really want to continue, but moving and holidays and the day job got in the way. I haven't promoted it yet, so no worries there. I have a relationship with stackit. I will read these documents thanks for the recommendations. Concretely for the pitch. I work for Cinq ICT, the parent company (newer than cinq funnily enough) is Innovatech. I think I must pitch at Cinq. A boutique IT consultancy firm specializing in data DevOps and development with about 50 engineers. I need to have an actual stake, but I also need their network, name and resources.Jun 22 / 2Claude responded: Let me get a picture of Cinq and Innovatech so the pitch advice is grounded in what they actually are, not generic.Synthesizing Cinq's structure and pitch strategySynthesizing Cinq's structure and pitch strategyLet me get a picture of Cinq and Innovatech so the pitch advice is grounded in what they actually are, not generic.Analyzed Cinq's model, equity structures, and pitch strategy for internal ventureAnalyzed Cinq's model, equity structures, and pitch strategy for internal ventureThat fills in the picture in a useful way. A few things about Cinq that should shape how you pitch:
+They're a boutique consultancy in Data, DevOps, Development and Quality, and they deliberately like staying compact — so don't pitch empire-building. The model is mostly detachering and project work: consultants on permanent Cinq contracts placed on client projects across the Netherlands, with some end-to-end projects run from the Amsterdam HQ. That matters because your idea has two halves with very different fit. The assessment-and-migration half is their existing business — project work and staff augmentation, just pointed at a new demand driver. The managed sovereign operations half is a different model (recurring, 24/7, on-call) that a body-shop consultancy doesn't have the muscle for yet. Pitch phase one as the thing that fits them perfectly, and treat managed ops as a deliberate phase-two decision, not part of the initial ask. It makes the yes much easier. CINQ ICTLinkedIn
+Two more details worth using: they're already in the hyperscaler ecosystem (AWS Marketplace seller, Azure Kubernetes work), and their GitHub has migration-comparison and validation tooling. Both are assets, but the first is also a tension you should name out loud — more on that below.
+The stake — the structural fork comes first
+Before any percentage conversation, there's a binary that determines everything: a real ownership stake requires a separate legal entity. You can't own a slice of one business unit inside Cinq BV. If sovereignty stays a unit inside Cinq, the most you can get is synthetic — phantom equity, profit-share, or SARs (stock appreciation rights). Those are contractual rights to economic upside, not ownership. If you genuinely want to own part of this, the ask has to be a new werkmaatschappij — call it whatever, "Cinq Sovereign" or a standalone brand — in which you hold founder shares, with Cinq/Innovatech as majority shareholder providing capital, people and name.
+In the Dutch context you'd typically hold those shares through your own persoonlijke holding BV rather than personally. The reason is the deelnemingsvrijstelling: if your holding owns 5% or more of the new entity, dividends and any eventual exit proceeds flow up to your holding without corporate tax, deferred until you take money out personally. The 5% line also triggers DGA status (gebruikelijkloon rules) and box-2 treatment. I'm not a tax advisor and the rates and thresholds shift, so this is a conversation to have with a fiscalist before you sign anything — but knowing the menu lets you ask for the right structure rather than accepting whatever's offered.
+Now the honest part about how much. You told me you can't take on all the risk and all the work, and that's completely reasonable — but it sits in direct tension with a large stake. Ownership tracks what you put at risk: capital, foregone salary, or sole accountability. Cinq is bringing the balance sheet, ~50 engineers, the brand, the client network and the back office; you're bringing the idea, the StackIT relationship, the thesis and your drive. The idea and one partner relationship alone don't command much. What justifies a meaningful stake is your willingness to own and drive it over years. So realistically, for an intrapreneur in your position, something in the 10–25% range of the new entity, held via your holding, vesting over three to four years, is a credible ask. If you want the top of that range or beyond, you trade for it — put in some capital, or take a reduced base salary in exchange for more equity. Decide where on that risk/reward curve you actually want to sit; that's your single most important pre-pitch decision.
+The one negotiation move that matters most: lock in the equity framework now, before you build it, while your leverage is highest. Your leverage is the idea plus your willingness — both of which evaporate the moment you've proven the model or shown you'll do it regardless. Get a written agreement in principle (an intentieovereenkomst or term sheet) up front, with the shares vesting against time and milestones. Don't build first and negotiate equity after; you'll be negotiating from zero.
+Who you actually pitch
+You said pitch at Cinq, and that's right for the champion conversation — the founders/MD who know you and can sponsor it. But creating a new entity with you as a shareholder changes the group's cap table, and that decision almost certainly escalates to Innovatech as the parent. So sequence it: win the Cinq leadership as your internal sponsor first, get them bought into the thesis and to you running it, then go to Innovatech together for the structural blessing. Walking into Innovatech cold with an equity ask, without Cinq behind you, is the weaker path.
+The pitch narrative
+Internal pitches differ from external ones — the room already knows you and roughly knows the market. So spend less time convincing them sovereignty is real (one or two slides; the Solvinity block and Amsterdam's strategy do that work) and more on why Cinq specifically wins and what you're asking for. Structure I'd use:
+
+The shift, briefly. Sovereignty went from talk to procurement criteria. Solvinity blocked, Amsterdam's 2026-2030 strategy, VNG open-source defaults. One slide.
+Why this fits Cinq, not just anyone. The same engineers who build Kubernetes on Azure can migrate workloads off it. You already have migration tooling on GitHub. This is your existing capability aimed at new demand — not a pivot.
+The wedge offering. Lead with the assessment plus migration, because it's pure project/consultancy work — exactly Cinq's model and margin profile. Managed ops flagged as a possible phase two, explicitly deferred.
+What I bring and what I'm asking for. The thesis, the StackIT relationship, the drive to own it — and the specific structural ask (new entity, your stake, vesting).
+The de-risked first step. This is what makes it easy to approve: don't ask them to commit to a whole new business. Ask for a small validation phase — a slice of your time plus some bench capacity for, say, a quarter, to land two paid assessments — with the equity term sheet signed up front, triggered on hitting an agreed milestone. Small downside for them, locked-in upside for you.
+
+The tension to name out loud
+Cinq currently earns from hyperscaler work, including AWS. A sovereignty line can look like biting the hand. Get ahead of it: frame this as a hedge and a diversification, not a repudiation. The hyperscaler work continues; sovereignty captures a new, policy-driven demand stream the existing business can't serve, using the same people. And note the strategic logic — when AWS European Sovereign Cloud and Microsoft's sovereign offerings are the competition, a truly EU-owned migration partner is differentiated precisely because Cinq isn't a US-owned hyperscaler. Naming the tension yourself reads as commercial maturity; letting someone else raise it reads as a blind spot.
+One thing that genuinely changes the equity math, so worth deciding before I help you draft anything: are you willing to put in capital or take a reduced base salary to push your stake higher, or do you want to keep your downside flat and accept a smaller percentage?
+Want me to draft the actual one-pager or pitch deck once you've got a view on that? I can also help you write the first sovereignty piece for blog.noudsavenije.nl — a sharp public POV is exactly the kind of thing that makes the internal pitch land harder.You said: Haha yeah check the author on that GitHub project, that's also me.Haha yeah check the author on that GitHub project, that's also me. Also this https://blog.noudsavenije.nl/domain-registration and for example https://www.cinqict.nl/blog/kubernetes-on-european-cloud-providersJun 2Claude responded: Ha — that changes the conversation.Recalibrated equity positioning after discovering substantial existing tractionRecalibrated equity positioning after discovering substantial existing tractionHa — that changes the conversation. You're not pitching an idea, you're pitching to put resources and structure behind something you've already started and are publicly identified with. That's a materially stronger position than where I had you last turn, and it should change how you walk into the room.
+A few things stand out, and they matter commercially, not just as nice writing. The personal series is essentially your assessment-and-migration methodology in public, narrative form — domain, hosting, version control, CI/CD, identity management, AI tooling, each assessed on data residency, regulatory risk, vendor lock-in, and who holds the keys. That's the exact journey a customer engagement walks through. So the series isn't a side hobby to mention; it's the methodology and the lead-generation engine. Someone Googling "European alternative to X" lands on you. Present it in the pitch as marketing-plus-IP, not as "oh and I also blog." noudsavenije
+The benchmark does two useful jobs at once. It proves the method — the same pipeline ran across Azure, StackIT, OVH and Hetzner, which is the vendor-agnostic Kubernetes-plus-Terraform portability layer working in practice. That portability layer is the technical spine of any migration offering, and you've already demonstrated it. And it keeps the pitch honest: your own results show Azure generally leads on performance with StackIT second, but the European results are consistent and predictable. That means the value proposition is jurisdiction and control with good-enough performance, not "better." Anchoring on sovereignty rather than speed is exactly right, and your data backs it rather than contradicting it. The self-deprecating ending — writing about escaping the Americans on a Windows laptop with a GitHub repo — is the kind of nuance that makes enterprise and government buyers trust you, because they're tired of sovereignty hype that pretends zero foreign exposure is achievable. Keep that register. cinqict
+Now the unglamorous advisory bit, because it bears directly on the equity conversation. Be clear-eyed about which assets are yours to bring and which are already Cinq's. The Cinq-branded benchmark post and the managed-k8s-comparer repo were almost certainly produced as an employee, on the company's name and likely its time — so they're Cinq's IP, not your contribution to the cap table. That's fine; they still work in your favour, because they prove the capability already lives in-house, which de-risks the whole thing for Cinq. The personal blog on your own domain, self-hosted, under your name, is yours. Before you negotiate a stake, read your employment contract for IP-assignment and nevenwerkzaamheden (side-activity) clauses, and keep clean lines between the personal brand and the commercial venture. The blog driving leads into a Cinq entity is a good thing, but you want it acknowledged in the arrangement, not blurred — precisely because you're asking for ownership, and you don't want a future dispute about whether your series is a competing activity or whose methodology it is.
+Net effect on the stake: you're closer to a founder with a working MVP and early traction than to someone with a thesis, so the higher end of that 10–25% range and the "lock the framework in now" move are both more defensible. Your leverage is that you're already the public face of this — Cinq gains from that association and would lose something real if you took it elsewhere. That's the quiet card you hold. Whether you push past the top of that range still depends on the lever I asked about: are you willing to put in capital or take a haircut on base salary, or keep your downside flat? That's the one number that most changes the answer.
+Given how much you've already built, the writing help I offered before is moot — you don't need it. The more useful next step is probably turning the public series into a formal, productized assessment framework Cinq can sell (the thing a client pays €15–30k for), or structuring the pitch itself around these assets so the "why me" question answers itself. Which of those is more useful to you right now?You said: All of the blog and investigation work was done in my own time, but they paid for for example stackit and ovh cost.All of the blog and investigation work was done in my own time, but they paid for for example stackit and ovh cost. Recognizing this risk I indeed moved to NoudSavenije.nl. I would really love to see how you see the assessment framework. That sounds valuable yet manageable.Jun 2Claude responded: This is exactly the right thing to formalize next, and the clean separation onto NoudSavenije.Weighing judgment calls for collaborative framework discussionWeighing judgment calls for collaborative framework discussionThis is exactly the right thing to formalize next, and the clean separation onto NoudSavenije.nl was a smart move — keep that line bright.
+Let me lay out the framework as a proper playbook you can take into the pitch and iterate on. A few design decisions I made deliberately, so you can push back on them:
+The core IP is a two-axis classification model — sovereignty exposure on one axis, migration feasibility on the other. That matrix is what turns a vague "we're too dependent on the Americans" worry into a prioritized, fundable roadmap, and it's what naturally sells the next engagement. I built the exposure axis around your own four lenses (data residency, regulatory risk, vendor lock-in, who holds the keys) because they're intuitive for a buyer and they're already yours.
+I also built in a deliberate "leave alone" quadrant. Telling a client which workloads not to move is the honesty that makes the rest credible — it's the consultancy equivalent of the Windows-laptop admission at the end of your blog. And I tiered it into a one-week Quick Scan and a three-to-four-week Full Assessment, so you have a cheap, low-commitment front door that funnels into the real thing.Identified key judgment calls and flagged scalability investment opportunitiesIdentified key judgment calls and flagged scalability investment opportunitiesThe structure is deliberately modular so you can take pieces into the pitch without committing Cinq to the whole thing on day one — the Quick Scan alone is a defensible "let me prove this with two pilots" ask.
+Three things I left as judgment calls for you, because they depend on knowledge you have and I don't:
+
+The scoring weights. I gave you ten factors but didn't fix their relative weight, because it should flex by segment — a municipality weights citizen-data sensitivity and BIO heavily, an insurer weights DORA and concentration risk. You might end up with two or three weighting profiles rather than one.
+The pricing. €7–10k and €15–30k are placeholders. Calibrate against Cinq's blended day rate; you know it, I don't. The Quick Scan should be cheap enough to be an easy yes and almost a loss-leader.
+The dependency scanner. The single highest-leverage build is extending your benchmark tooling into a discovery scanner that auto-populates the inventory. That's the thing that makes the assessment fast and high-margin, and it's a natural continuation of what you've already built — which also makes it a clean story for "why me and why does this belong at Cinq."
+
+Want me to draft the scoring rubric next — the actual 1–5 definitions for each factor, which is the part that makes it repeatable across consultants — or turn this into the pitch one-pager for Cinq leadership?Sovereignty assessment frameworkDocument · MD Open in Visual Studio CodeYou said: No.No. I want to stop for now. Read the documents you shared earlier (please list them again for convenience), work a bit on the blog, create a list of potential clients and take my time to go over the assessment framework you built. Thanks for now, see you in a month.Jun 2Claude responded: Sounds like a solid plan.Sounds like a solid plan. Here are the documents to read, gathered in one place:
+Dutch government / policy
+
+Amsterdam Sourcing- en Cloudstrategie 2026–2030 (your free roadmap of what's being procured)
+Nederlandse Digitaliseringsstrategie (NDS) — and find out who sits on the aanjaagteam Cloud
+VNG's 2026 GIBIT procurement guidelines (the open-source-by-default rule)
+
+Competitive / market context
+
+AWS European Sovereign Cloud — what it actually clears and what it doesn't (your differentiation hinges on this)
+Microsoft Sovereign Cloud, for the same reason
+
+And the one deliverable from today: the Sovereignty Assessment framework (sovereignty-assessment-framework.md) that I shared just above — to mull over at your own pace.
+A month is the right cadence for what's on your list. The three threads — read, write, build the client list — feed each other: the policy reading will sharpen who belongs on the client list, and working the blog series further is itself the methodology taking shape. When you're back, good next steps would be the scoring rubric, the pitch one-pager for Cinq, or the client list if you'd like a second pair of eyes on it.
+Enjoy the breathing room. See you in a month.You said: What about SharePoint and such?What about SharePoint and such?Jun 5Claude responded: Worth its own quick look — SharePoint sits right on the fault line of your scope.Weighed SharePoint's dual nature as data and infrastructure tensionWeighed SharePoint's dual nature as data and infrastructure tensionWorth its own quick look — SharePoint sits right on the fault line of your scope. Let me check the current alternative landscape before I answer.Decomposed SharePoint's dual nature and positioned strategic repatriation approachDecomposed SharePoint's dual nature and positioned strategic repatriation approachGood catch to raise before you go, because SharePoint is the single best stress-test of the scope boundary — it straddles the line between "data, do this first" and "office lattice, leave alone."
+The trick is to stop treating "SharePoint" as one thing. It's two glued together: a document store, and a collaboration/intranet/workflow platform welded into the rest of the Microsoft estate. By your own data-first thesis the documents are often the most sovereignty-sensitive things a municipality owns — case files, citizen correspondence, contracts — so they're high-exposure and belong in scope. But the platform is bound to Entra ID, Teams, OneDrive, Power Automate and co-authoring, and replacing the editor is hard enough; replacing the organisational lattice around it is far harder. That lattice is the office-suite beast you said to avoid leading with. TechCrunch
+So in the framework, SharePoint lands in the Strategic Move quadrant — high exposure, high effort — not a quick win, not something you lead with, but something you need a credible staged answer for because clients absolutely will ask. The pragmatic play: repatriate the high-sensitivity document subset to a sovereign file store (that's data migration, your wheelhouse) without ripping out all of M365 on day one, and defer the full collaboration-platform replacement. The wholesale rip-out — Teams, Exchange, end-user retraining — is a different business with a brutal change-management bill. Refer that out or scope it as a separate program; don't let it contaminate your clean data-and-compute pitch.
+On where to land it, the alternatives are real but I'd be honest with clients that they're early. Office.eu launched in March 2026 from The Hague, Nextcloud-based and 100% European-owned, and Euro-Office, a fork of OnlyOffice from an IONOS/Nextcloud-led consortium, hits stable release on June 9 — that's four days from now. It's already tangled in legal disputes with OnlyOffice's maintainers and a fight over document-format standards. The building blocks underneath — Nextcloud with OnlyOffice or Collabora — are mature enough that the ICC moved off Microsoft 365 to a European open-source suite in November 2025, but I wouldn't stake a client's daily operations on a productivity suite that GA'd last week. "Real and improving fast, not yet safe for your whole workforce" is the honest line, and it fits your register. Yeandel + 3
+The reusable lesson for when you review the framework: decompose every sticky Microsoft product into its data layer and its platform layer, and score them separately. SharePoint, OneDrive, even Exchange all split the same way. That decomposition is what keeps you in the achievable-data-migration lane instead of accidentally selling an office-suite revolution.
+Now go enjoy the month. See you in a few weeks.
+
+sovereingthy assessment framework draft:
+# Sovereignty Assessment — Framework & Delivery Playbook
+
+*Draft v0.1 — productized wedge offering for the sovereignty practice*
+
+---
+
+## 1. What this is (and what it is not)
+
+The Sovereignty Assessment is a fixed-scope, fixed-price engagement that answers one
+question for a client: **which of our data and workloads are exposed to foreign
+jurisdiction, how bad is that exposure, and what would it take to fix it?**
+
+It produces a prioritized, costed roadmap — not a migration, not a legal opinion, not
+an infrastructure build. It is the wedge: low commitment for the client, high signal for
+us, and it sets up the migration engagement that follows.
+
+**Positioning discipline.** Sell control and jurisdiction, not "cheaper" or "faster."
+The honest story — and the one the benchmark data supports — is that European providers
+are predictable and good-enough, occasionally pricier, and that the value is in who can
+be compelled to hand over data, who can switch you off, and whether you can leave. Never
+promise zero foreign exposure; that promise is not credible and clients know it.
+
+**Explicitly out of scope** (mention only if asked, scope separately): office-suite
+migration, email migration, full IdP replacement, ERP/CRM/SAP, the migration execution
+itself, and building any infrastructure.
+
+---
+
+## 2. Two tiers — the funnel
+
+| | **Quick Scan** | **Full Assessment** |
+|---|---|---|
+| Duration | ~1 week | 3–4 weeks |
+| Indicative price | €7–10k | €15–30k |
+| Output | Dependency inventory + exposure heatmap | Everything in Quick Scan + feasibility scoring, prioritized roadmap, target landing zones, cost projection, compliance mapping |
+| Purpose | Cheap front door; create urgency with a picture of reality | The fundable plan; hands off directly to a migration SOW |
+| Sells | The Full Assessment | The migration engagement |
+
+The Quick Scan exists because most clients genuinely **do not know where their data
+runs** — that knowledge gap is the most common entry point. Show them the map, and the
+Full Assessment sells itself.
+
+---
+
+## 3. The analytical core — the classification model
+
+Every in-scope workload, dataset, or service is scored on two axes. The intersection
+drives the roadmap.
+
+### Axis A — Sovereignty Exposure ("how much should we worry")
+
+Score each 1–5, weighted, roll up to a single exposure rating.
+
+1. **Data residency & jurisdiction** — Is the provider US-owned or otherwise reachable
+   by foreign legal compulsion (CLOUD Act and equivalents)? Note: a hyperscaler
+   "sovereign cloud" with EU staff but US parent does **not** clear this lens — the
+   Solvinity case turned on ownership, not where the engineers sit.
+2. **Regulatory trigger** — Does NIS2 (NL: Cyberbeveiligingswet), DORA, AVG/GDPR
+   (incl. Schrems II transfer rules), or BIO impose specific obligations on this
+   workload? Higher when the workload is in scope of a hard regime.
+3. **Data sensitivity & criticality** — Special-category personal data, citizen data,
+   vital-process data score high. Public/non-personal data scores low.
+4. **Concentration risk** — How much does this depend on a single provider or a single
+   provider's proprietary services? Single-vendor lock-in raises exposure.
+5. **Who holds the keys** — Encryption key custody, admin/root access, operational
+   control. If the provider can technically read or freeze it, exposure is higher.
+
+### Axis B — Migration Feasibility ("how hard to move")
+
+Score each 1–5, roll up to an effort rating.
+
+1. **Architecture portability** — Containerized + infrastructure-as-code (Kubernetes +
+   Terraform) is low effort; proprietary PaaS (Lambda, Cosmos DB, managed
+   hyperscaler-only services) is high effort. *This is where the benchmark thesis pays
+   off: the K8s/Terraform layer is the portability backbone.*
+2. **Data gravity** — Volume, egress cost, and how tightly coupled the data is to other
+   systems.
+3. **Functional parity** — Does a credible EU provider offer the equivalent service? If
+   there's no equivalent (some GPU, some niche PaaS), effort/uncertainty is high.
+4. **Integration dependencies** — Ties to IdP/SSO, managed databases, message queues,
+   third-party SaaS.
+5. **Operational readiness** — Does the client's team have the skills to run the target,
+   or do they need managed operations afterward (a phase-two upsell)?
+
+### The matrix
+
+```
+                 LOW migration effort        HIGH migration effort
+              +---------------------------+---------------------------+
+HIGH exposure |   QUICK WINS              |   STRATEGIC MOVES         |
+              |   Do first. Fund now.     |   Plan, phase, budget.    |
+              |   These prove value fast. |   These are the big SOWs. |
+              +---------------------------+---------------------------+
+LOW exposure  |   OPPORTUNISTIC           |   LEAVE ALONE             |
+              |   Move if convenient,     |   Explicitly recommend    |
+              |   e.g. bundled with a     |   NOT moving. This honesty |
+              |   nearby quick win.       |   earns trust.            |
+              +---------------------------+---------------------------+
+```
+
+---
+
+## 4. Delivery process (Full Assessment, 3–4 weeks)
+
+**Phase 0 — Kickoff (days 1–2).** Confirm scope and boundaries, identify stakeholders
+(CISO/CIO, architects, data owners, procurement), secure read access to cloud accounts
+and architecture docs. Agree the workload list to be assessed.
+
+**Phase 1 — Discovery & inventory (week 1).** Stakeholder interviews using the standard
+guide + technical discovery (cloud config/billing scan, architecture review) to build
+the dependency inventory. Goal: a complete map of what runs where, on whose
+infrastructure, under whose jurisdiction.
+
+**Phase 2 — Classification & analysis (week 2).** Score every item on both axes using
+the rubric. Place on the matrix. Map regulatory triggers. Identify concentration risks.
+
+**Phase 3 — Roadmap & target architecture (week 3).** For the Quick Wins and Strategic
+Moves, propose target landing zones from the reference patterns (section 6). Build the
+phased roadmap, honest cost projection, and compliance mapping.
+
+**Phase 4 — Readout (week 4).** Two artifacts, two audiences: an executive summary for
+the board (risk, options, cost, recommendation) and a technical appendix for the
+engineers (per-workload scoring, target architectures, migration notes). Live
+presentation, then handoff to a proposed migration SOW.
+
+---
+
+## 5. Deliverables
+
+- **Dependency inventory** — the map of what runs where and under whose jurisdiction.
+- **Exposure heatmap** — visual, board-ready, the "oh no" artifact.
+- **Prioritization matrix** — the four quadrants, every workload placed.
+- **Target landing zones** — recommended EU provider + architecture per movable workload.
+- **Cost projection** — honest, including cases where sovereign costs more.
+- **Compliance mapping** — which workloads satisfy / risk NIS2, DORA, AVG, BIO.
+- **Executive summary + technical appendix** — board and engineers, respectively.
+- **Proposed migration roadmap / SOW** — the bridge to the next engagement.
+
+---
+
+## 6. Reference landing zones (what makes it repeatable)
+
+Don't redesign per client. Maintain a small library of vetted target patterns:
+
+- **Containerized web/app workload** → managed Kubernetes (StackIT or OVHcloud) +
+  managed PostgreSQL. The default, benchmark-backed path.
+- **Object storage / data lake** → S3-compatible EU storage (OVH, Scaleway).
+- **Classic VMs** → EU IaaS (Leaseweb, Fuga, OVH), lift-and-shift.
+- **Cost-sensitive, hands-on team** → Hetzner IaaS with self-managed k3s (flag the
+  operational trade-off explicitly).
+- **Managed databases / queues** → provider-native EU equivalents, per-workload check.
+
+**Known gaps to declare up front** (this is part of the honesty):
+- GPU / large-scale AI compute — limited EU options, often a "leave alone for now."
+- Certain proprietary PaaS — no clean equivalent; refactor or defer.
+- Identity — recommend federation (keep Entra, broker sensitive workloads to an EU IdP)
+  rather than rip-and-replace.
+
+---
+
+## 7. The repeatable toolkit (manageability)
+
+The whole point is that a small team runs this without reinventing it each time:
+
+- **Interview guide** — standard stakeholder questions per role.
+- **Discovery toolkit** — scripts to pull cloud config/billing into the inventory
+  (a natural extension of the existing benchmark tooling: a "dependency scanner").
+- **Scoring rubric** — the 1–5 definitions for all ten factors, so scoring is consistent
+  across consultants and clients.
+- **Report templates** — exec summary + technical appendix, pre-structured.
+- **Reference pattern library** — section 6, maintained and versioned.
+
+Build these once; each subsequent assessment gets faster and more profitable.
+
+---
+
+## 8. Land-and-expand
+
+The roadmap *is* the migration sales document. Sequence:
+
+1. **Quick Scan** → reveals reality, creates urgency → sells the Full Assessment.
+2. **Full Assessment** → produces the funded roadmap → sells the first migration
+   (start with Quick Wins; they prove value fast and de-risk the relationship).
+3. **Migration** → on completion, the client now runs a sovereign environment they may
+   not have the team to operate → optional **managed operations** (phase-two, recurring
+   revenue — but a different operating model for Cinq, decide deliberately).
+
+---
+
+## 9. Positioning guardrails (keep these visible)
+
+- Lead with jurisdiction and control, never "cheaper/faster."
+- Never promise zero foreign exposure; manage the dependency, don't pretend it away.
+- Be proud of the "leave alone" quadrant — restraint is a credibility signal.
+- Regulatory mapping flags obligations; it is not legal advice. Recommend the client's
+  own legal/compliance review for anything load-bearing.
+- Cost realism up front. A surprise on price later kills trust and the migration deal.

@@ -72,6 +72,13 @@ spec:
             - sh
             - -c
             - |
+              # Re-register if the instance URL changed (e.g. internal -> public).
+              # The registered address becomes each job's github.server_url, so a
+              # stale .runner would keep pointing jobs at an unreachable host.
+              if [ -f /data/.runner ] && ! grep -q '{{ forgejo_url }}' /data/.runner; then
+                echo "Runner instance URL changed, re-registering..."
+                rm -f /data/.runner
+              fi
               if [ ! -f /data/.runner ]; then
                 forgejo-runner register --no-interactive \
                   --token "$RUNNER_TOKEN" \

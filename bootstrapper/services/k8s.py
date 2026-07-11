@@ -85,6 +85,10 @@ def wire_oidc(client: paramiko.SSHClient, authentik_domain: str) -> None:
     ssh_utils.run(client, "/usr/local/bin/k3s-killall.sh && systemctl start k3s")
     click.echo("  Waiting for k3s to become ready...")
     _wait_for_k3s(client)
+    # k3s-killall.sh tears down every pod; the API server returns before workloads
+    # are back. Wait for Forgejo specifically, since the caller exec's into it next.
+    click.echo("  Waiting for Forgejo to restart...")
+    ssh_utils.run(client, "k3s kubectl -n forgejo rollout status deploy/forgejo --timeout=180s")
     click.echo("  k3s OIDC wired.")
 
 
