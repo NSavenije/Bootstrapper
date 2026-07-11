@@ -13,6 +13,10 @@ from bootstrapper.deploy.helm import DEPLOY_DIR
 
 _BASE = "http://forgejo-http.forgejo.svc.cluster.local:3000"
 
+# Locally-built job image for the Actions runner. Referenced by local tag only —
+# built on the host Docker daemon the runner shares, never pushed to a registry.
+CI_RUNNER_IMAGE = "platform-ci:latest"
+
 
 def resolve_forgejo_version(version: str) -> str:
     """Resolve 'latest' to the actual latest Forgejo release tag via Codeberg API."""
@@ -180,25 +184,51 @@ def create_api_token(client: paramiko.SSHClient, username: str, password: str) -
     return r.json()["sha1"]
 
 
+def build_ci_runner_image(client: paramiko.SSHClient, image: str = CI_RUNNER_IMAGE) -> None:
+    """Build the baked CI job image on the host Docker daemon.
+
+    The runner launches job containers through the host's docker.sock, so an image
+    built here (and tagged locally) is immediately usable by jobs without any
+    registry, pull credentials, or TLS trust. Docker layer caching makes repeat
+    builds cheap, so this is safe to run on every provision.
+    """
+    click.echo(f"  Building CI runner image {image} on host (this can take a few minutes)...")
+    dockerfile = manifests.render('docker/ci-runner.Dockerfile')
+    remote_dir = f"{DEPLOY_DIR}/ci-runner"
+    ssh_utils.run(client, f"mkdir -p {remote_dir}")
+    ssh_utils.upload(client, dockerfile, f"{remote_dir}/Dockerfile")
+    ssh_utils.run(client, f"docker build -t {shlex.quote(image)} {remote_dir}")
+    click.echo(f"  CI runner image {image} built.")
+
+
 def deploy_runner(
     client: paramiko.SSHClient,
     runner_token: str,
     forgejo_url: str,
     forgejo_domain: str,
 ) -> None:
-    """Deploy the Forgejo Actions runner as a k8s Deployment in kube-system."""
+    """Deploy the Forgejo Actions runner as a k8s Deployment in kube-system.
+
+    Builds the baked CI job image first so the label->image mapping in the runner
+    config resolves to a locally-present image.
+    """
+    build_ci_runner_image(client)
+
     click.echo("  Deploying Forgejo Actions runner to k3s...")
     manifest = manifests.render(
         'k8s/runner.yaml.j2',
         runner_token=runner_token,
         forgejo_url=forgejo_url,
         forgejo_domain=forgejo_domain,
+        ci_runner_image=CI_RUNNER_IMAGE,
     )
 
     remote_path = f"{DEPLOY_DIR}/runner.yaml"
     ssh_utils.run(client, f"mkdir -p {DEPLOY_DIR}")
     ssh_utils.upload(client, manifest, remote_path)
     ssh_utils.run(client, f"k3s kubectl apply -f {remote_path}")
+    # Restart so a config-only change (new labels) is picked up on re-runs.
+    ssh_utils.run(client, "k3s kubectl rollout restart deploy/forgejo-runner -n kube-system")
     click.echo("  Forgejo Actions runner deployed.")
 
 

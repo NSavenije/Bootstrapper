@@ -25,7 +25,8 @@ def generate(state: dict) -> dict:
     Mutates state in place so new secrets are included on save.
     """
     generated = state.get('generated_secrets', {})
-    for key in ('authentik_db_password', 'authentik_secret_key', 'authentik_bootstrap_token'):
+    for key in ('authentik_db_password', 'authentik_secret_key', 'authentik_bootstrap_token',
+                'umami_db_password', 'umami_app_secret'):
         if key not in generated:
             generated[key] = _secrets.token_urlsafe(32)
     state['generated_secrets'] = generated

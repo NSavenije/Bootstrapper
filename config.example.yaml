@@ -38,6 +38,9 @@ authentik:
     - website-readers
 
 argocd_domain: "argocd.yourdomain.nl"   # required; Argo CD web UI
+# headlamp_domain: "headlamp.yourdomain.nl"  # optional; Kubernetes web UI (Headlamp) with Authentik SSO
+# portal_domain: "portal.yourdomain.nl"      # optional; friendly redirect to the Authentik app dashboard
+# analytics_domain: "stats.yourdomain.nl"    # optional; Umami cookieless analytics (no consent banner)
 
 
 # ─────────────────────────────────────────────

@@ -1,0 +1,49 @@
+# Umami — cookieless, privacy-first web analytics (no consent banner needed).
+#
+# Runs lean: no bundled database. It reuses the existing Authentik PostgreSQL
+# with its own isolated `umami` database, so we only add the Umami app (~150Mi)
+# to an already-full node rather than a second Postgres.
+postgresql:
+  enabled: false
+mysql:
+  enabled: false
+
+externalDatabase:
+  type: postgresql
+  hostname: "{{ db_host }}"
+  port: 5432
+  auth:
+    database: "{{ db_name }}"
+    username: "{{ db_user }}"
+    password: "{{ db_password }}"
+
+umami:
+  appSecret:
+    secret: "{{ app_secret }}"
+  disableTelemetry: "1"
+  disableUpdates: "1"
+
+# Keep a hard lid on memory since the node is tight.
+resources:
+  requests:
+    cpu: 25m
+    memory: 128Mi
+  limits:
+    memory: 256Mi
+
+ingress:
+  enabled: true
+  className: traefik
+  annotations:
+    cert-manager.io/cluster-issuer: {{ cluster_issuer }}
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+  hosts:
+    - host: {{ analytics_domain }}
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: umami-tls
+      hosts:
+        - {{ analytics_domain }}

@@ -1,0 +1,45 @@
+# Friendly front door: portal.<domain> 302-redirects to the Authentik user
+# dashboard (the app launcher / single pane of glass). A redirect — not a second
+# host for Authentik — keeps all sessions, cookies and the OIDC issuer on the
+# canonical iam.<domain>, avoiding split-session issues.
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: portal-redirect
+  namespace: authentik
+spec:
+  redirectRegex:
+    regex: ".*"
+    replacement: "https://{{ authentik_domain }}/if/user/"
+    permanent: false
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: portal
+  namespace: authentik
+  annotations:
+    cert-manager.io/cluster-issuer: {{ cluster_issuer }}
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    # Redirect happens after TLS termination; the ACME HTTP-01 solver registers a
+    # more specific path route, so cert issuance is unaffected by the catch-all.
+    traefik.ingress.kubernetes.io/router.middlewares: authentik-portal-redirect@kubernetescrd
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: {{ portal_domain }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: authentik-server
+                port:
+                  number: 80
+  tls:
+    - hosts:
+        - {{ portal_domain }}
+      secretName: portal-tls

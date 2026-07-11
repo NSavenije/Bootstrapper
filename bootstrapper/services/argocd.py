@@ -52,6 +52,9 @@ def configure_argocd_sso(
         client, bootstrap_token,
         name="argocd", slug="argocd", app_name="Argo CD",
         redirect_uris=[{"matching_mode": "strict", "url": f"https://{argocd_domain}/auth/callback"}],
+        # Argo CD has no direct OIDC-initiation deep link; its login page shows a
+        # "Log in via Authentik" button. Land the user there rather than nowhere.
+        launch_url=f"https://{argocd_domain}/auth/login",
     )
     _apply_argocd_sso_secrets(client, client_secret, forgejo_domain, forgejo_admin_username, forgejo_api_token)
     _patch_argocd_cm(client, authentik_domain, argocd_domain, client_id)

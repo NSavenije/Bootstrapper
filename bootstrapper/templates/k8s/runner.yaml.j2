@@ -7,10 +7,20 @@ metadata:
 data:
   config.yaml: |
     container:
+      # force_pull:false so the locally-built {{ ci_runner_image }} is used from the
+      # host daemon instead of being fetched from a registry (there is none).
+      force_pull: false
       options: "-v /var/run/docker.sock:/var/run/docker.sock"
       valid_volumes:
         - /var/run/docker.sock
     runner:
+      # Labels set here override those baked into .runner at registration, so the
+      # baked image takes effect without re-registering the runner. Every common
+      # label points at the pre-built CI image.
+      labels:
+        - "ubuntu-latest:docker://{{ ci_runner_image }}"
+        - "docker:docker://{{ ci_runner_image }}"
+        - "ci:docker://{{ ci_runner_image }}"
       envs:
         GITEA_SERVER_URL: "https://{{ forgejo_domain }}"
         GITHUB_SERVER_URL: "https://{{ forgejo_domain }}"

@@ -27,6 +27,9 @@ def load(config_path: str | None, overrides: dict | None) -> dict:
     cfg.setdefault('authentik_version', '2024.10.5')
     cfg.setdefault('argocd_domain', None)
     cfg.setdefault('blog_domain', None)
+    cfg.setdefault('headlamp_domain', None)  # optional; enables the Headlamp k8s UI
+    cfg.setdefault('portal_domain', None)    # optional; friendly redirect to the Authentik dashboard
+    cfg.setdefault('analytics_domain', None)  # optional; enables Umami cookieless analytics
 
     # Local-provider defaults: no cloud token/key needed; SSH user may differ from root
     if cfg['provider'] == 'local':

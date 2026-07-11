@@ -14,9 +14,11 @@ from bootstrapper.backends.local import LocalBackend
 from bootstrapper.deploy import docker as docker_module
 from bootstrapper.deploy import helm as helm_module
 from bootstrapper.deploy import ssh as ssh_module
+from bootstrapper.services import analytics as analytics_module
 from bootstrapper.services import argocd as argocd_module
 from bootstrapper.services import authentik as authentik_module
 from bootstrapper.services import forgejo as forgejo_module
+from bootstrapper.services import headlamp as headlamp_module
 from bootstrapper.services import k8s as k8s_module
 from bootstrapper.services import sso as sso_module
 
@@ -179,7 +181,20 @@ def provision(config_path, provider, forgejo_version, authentik_version, ssh_key
 
         # --- Step 5: Install Argo CD + runner ---
         click.echo("\n[5/6] Installing Argo CD, configuring SSO and deploying runner...")
-        authentik_module.configure_k3s_oidc(ssh, gen['authentik_bootstrap_token'])
+        k8s_client_id, k8s_client_secret = authentik_module.configure_k3s_oidc(
+            ssh, gen['authentik_bootstrap_token'],
+            headlamp_domain=cfg.get('headlamp_domain'),
+        )
+        if cfg.get('headlamp_domain'):
+            headlamp_module.install_headlamp(
+                ssh, cfg['headlamp_domain'], authentik_cfg['domain'],
+                k8s_client_id, k8s_client_secret, cluster_issuer=cluster_issuer,
+            )
+            headlamp_module.configure_oidc_rbac(
+                ssh,
+                authentik_cfg.get('groups', authentik_module.DEFAULT_GROUPS),
+                admin_group=authentik_cfg.get('admin_group', 'forgejo-admins'),
+            )
         argocd_module.install_argocd(ssh, cfg['argocd_domain'], cluster_issuer=cluster_issuer)
         argocd_module.configure_argocd_sso(
             ssh,
@@ -196,6 +211,18 @@ def provision(config_path, provider, forgejo_version, authentik_version, ssh_key
             forgejo_url="http://forgejo-http.forgejo.svc.cluster.local:3000",
             forgejo_domain=forgejo_cfg['domain'],
         )
+
+        if cfg.get('portal_domain'):
+            authentik_module.install_portal_redirect(
+                ssh, cfg['portal_domain'], authentik_cfg['domain'], cluster_issuer=cluster_issuer,
+            )
+
+        if cfg.get('analytics_domain'):
+            analytics_module.install_umami(
+                ssh, cfg['analytics_domain'],
+                gen['umami_db_password'], gen['umami_app_secret'],
+                cluster_issuer=cluster_issuer,
+            )
 
         # --- Step 6: Seed platform-config repository ---
         click.echo("\n[6/6] Seeding platform-config repository in Forgejo...")
@@ -216,6 +243,9 @@ def provision(config_path, provider, forgejo_version, authentik_version, ssh_key
     # --- Summary ---
     argocd_domain = cfg['argocd_domain']
     blog_line = f"\n  Blog:      https://{cfg['blog_domain']}" if cfg.get('blog_domain') else ""
+    headlamp_line = f"\n  Headlamp:  https://{cfg['headlamp_domain']}" if cfg.get('headlamp_domain') else ""
+    portal_line = f"\n  Portal:    https://{cfg['portal_domain']}  (-> Authentik dashboard)" if cfg.get('portal_domain') else ""
+    analytics_line = f"\n  Analytics: https://{cfg['analytics_domain']}  (Umami; login admin/umami — change it)" if cfg.get('analytics_domain') else ""
     blog_hosts = f"\n  {server_ip}  {cfg['blog_domain']}" if cfg.get('blog_domain') else ""
 
     if cfg['provider'] == 'local':
@@ -261,7 +291,7 @@ Bootstrap complete!
 Services:
   Forgejo:   https://{forgejo_cfg['domain']}
   Authentik: https://{authentik_cfg['domain']}
-  Argo CD:   https://{argocd_domain}{blog_line}
+  Argo CD:   https://{argocd_domain}{headlamp_line}{portal_line}{analytics_line}{blog_line}
 
 Admin credentials (saved to .bootstrapper-state.yaml):
   Forgejo:   {forgejo_cfg['admin_username']} / {forgejo_cfg['admin_password']}
@@ -296,6 +326,220 @@ def wire_k3s_oidc(ssh_key, config_path):
         )
     finally:
         ssh.close()
+
+@cli.command('seed-demo-users')
+@click.option('--config', 'config_path', type=click.Path(exists=True), default='config.yaml', help='Path to YAML config file')
+@click.option('--ssh-key', 'ssh_key', type=click.Path(exists=True), default=None, help='SSH private key path (overrides config)')
+@click.option('--server-ip', default=None, help='Target server IP (overrides .bootstrapper-state.yaml)')
+@click.option('--password', default=None, help='Password for all demo users (default: authentik.admin_password from config)')
+def seed_demo_users(config_path, ssh_key, server_ip, password):
+    """Create one demo user per Authentik group for testing and live demos.
+
+    For every group under `authentik.groups` in the config, creates a member named
+    `demo-<group>` (e.g. demo-forgejo-admins), all sharing one password so you can
+    log in as any role instantly. Idempotent — re-run to reset passwords. Demo
+    accounts only; do not use for real identities.
+    """
+    cfg = cfg_module.load(config_path, {'ssh_key': ssh_key} if ssh_key else {})
+    authentik_cfg = cfg['authentik']
+    groups = authentik_cfg.get('groups', authentik_module.DEFAULT_GROUPS)
+    pw = password or authentik_cfg['admin_password']
+    email_domain = authentik_cfg['email'].split('@', 1)[-1]
+
+    target_ip = server_ip or secrets_module.load_state().get('server_ip')
+    if not target_ip:
+        raise click.UsageError("No server IP: pass --server-ip or provision first (writes state).")
+
+    click.echo(f"Seeding {len(groups)} demo user(s) on {target_ip}...")
+    ssh = ssh_module.connect(
+        target_ip, cfg['ssh_private_key'],
+        username=cfg['ssh_user'],
+        use_sudo=(cfg['ssh_user'] != 'root'),
+    )
+    try:
+        results = authentik_module.seed_demo_users(ssh, groups, pw, email_domain)
+    finally:
+        ssh.close()
+
+    click.echo("\nDemo users ready (all share the same password):\n")
+    width = max(len(u) for u, _, _ in results)
+    for username, group, action in results:
+        click.echo(f"  {username:<{width}}  group={group:<18} [{action}]")
+    click.echo(f"\n  Password: {pw}")
+    click.echo(f"  Sign in at: https://{authentik_cfg['domain']}\n")
+
+
+@cli.command('install-headlamp')
+@click.option('--config', 'config_path', type=click.Path(exists=True), default='config.yaml', help='Path to YAML config file')
+@click.option('--ssh-key', 'ssh_key', type=click.Path(exists=True), default=None, help='SSH private key path (overrides config)')
+@click.option('--server-ip', default=None, help='Target server IP (overrides .bootstrapper-state.yaml)')
+@click.option('--headlamp-domain', default=None, help='Headlamp hostname (overrides config headlamp_domain)')
+def install_headlamp_cmd(config_path, ssh_key, server_ip, headlamp_domain):
+    """Install the Headlamp Kubernetes UI with Authentik SSO on an existing platform.
+
+    Reuses the 'kubernetes' OIDC client, adds Headlamp's callback, points the
+    Kubernetes app tile at Headlamp, deploys the chart, and binds Authentik groups
+    to cluster roles. Add a DNS A record for the hostname -> server IP for TLS.
+    """
+    cfg = cfg_module.load(config_path, {'ssh_key': ssh_key} if ssh_key else {})
+    authentik_cfg = cfg['authentik']
+    domain = headlamp_domain or cfg.get('headlamp_domain')
+    if not domain:
+        raise click.UsageError("No Headlamp domain: pass --headlamp-domain or set headlamp_domain in config.")
+
+    state = secrets_module.load_state()
+    target_ip = server_ip or state.get('server_ip')
+    if not target_ip:
+        raise click.UsageError("No server IP: pass --server-ip or provision first (writes state).")
+
+    click.echo(f"Installing Headlamp at {domain} on {target_ip}...")
+    ssh = ssh_module.connect(
+        target_ip, cfg['ssh_private_key'],
+        username=cfg['ssh_user'],
+        use_sudo=(cfg['ssh_user'] != 'root'),
+    )
+    ssh_module.start_curl_pod(ssh)
+    try:
+        token = authentik_module.ensure_admin_token(
+            ssh, state.get('generated_secrets', {}).get('authentik_bootstrap_token'),
+        )
+        client_id, client_secret = authentik_module.configure_k3s_oidc(ssh, token, headlamp_domain=domain)
+        headlamp_module.install_headlamp(ssh, domain, authentik_cfg['domain'], client_id, client_secret)
+        headlamp_module.configure_oidc_rbac(
+            ssh,
+            authentik_cfg.get('groups', authentik_module.DEFAULT_GROUPS),
+            admin_group=authentik_cfg.get('admin_group', 'forgejo-admins'),
+        )
+    finally:
+        ssh_module.stop_curl_pod(ssh)
+        ssh.close()
+    click.echo(f"""
+Headlamp installed. Final step — add this DNS record so TLS can issue:
+  {domain}  ->  {target_ip}
+
+Then open https://{domain} (or click the Kubernetes tile in Authentik) and sign in.
+""")
+
+
+@cli.command('install-analytics')
+@click.option('--config', 'config_path', type=click.Path(exists=True), default='config.yaml', help='Path to YAML config file')
+@click.option('--ssh-key', 'ssh_key', type=click.Path(exists=True), default=None, help='SSH private key path (overrides config)')
+@click.option('--server-ip', default=None, help='Target server IP (overrides .bootstrapper-state.yaml)')
+@click.option('--analytics-domain', default=None, help='Umami hostname (overrides config analytics_domain)')
+def install_analytics(config_path, ssh_key, server_ip, analytics_domain):
+    """Install Umami cookieless analytics (no consent banner) on an existing platform.
+
+    Runs lean: reuses the Authentik PostgreSQL with an isolated umami database.
+    Add a DNS A record for the hostname -> server IP so its TLS cert can issue.
+    """
+    cfg = cfg_module.load(config_path, {'ssh_key': ssh_key} if ssh_key else {})
+    domain = analytics_domain or cfg.get('analytics_domain')
+    if not domain:
+        raise click.UsageError("No analytics domain: pass --analytics-domain or set analytics_domain in config.")
+
+    state = secrets_module.load_state()
+    gen = secrets_module.generate(state)
+    secrets_module.save_state(state)
+    target_ip = server_ip or state.get('server_ip')
+    if not target_ip:
+        raise click.UsageError("No server IP: pass --server-ip or provision first (writes state).")
+
+    click.echo(f"Installing Umami at {domain} on {target_ip}...")
+    ssh = ssh_module.connect(
+        target_ip, cfg['ssh_private_key'],
+        username=cfg['ssh_user'],
+        use_sudo=(cfg['ssh_user'] != 'root'),
+    )
+    try:
+        analytics_module.install_umami(
+            ssh, domain, gen['umami_db_password'], gen['umami_app_secret'],
+        )
+    finally:
+        ssh.close()
+    click.echo(f"""
+Umami installed. Add this DNS record so its TLS cert can issue:
+  {domain}  ->  {target_ip}
+
+Then open https://{domain} and sign in with admin / umami (change the password).
+Add a website there for your blog, copy its tracking snippet into the site's
+<head>, and — being cookieless — you need no consent banner.
+""")
+
+
+@cli.command('install-portal')
+@click.option('--config', 'config_path', type=click.Path(exists=True), default='config.yaml', help='Path to YAML config file')
+@click.option('--ssh-key', 'ssh_key', type=click.Path(exists=True), default=None, help='SSH private key path (overrides config)')
+@click.option('--server-ip', default=None, help='Target server IP (overrides .bootstrapper-state.yaml)')
+@click.option('--portal-domain', default=None, help='Portal hostname (overrides config portal_domain)')
+def install_portal(config_path, ssh_key, server_ip, portal_domain):
+    """Publish a friendly portal.<domain> that redirects to the Authentik dashboard.
+
+    Deploys a Traefik redirect + cert. Add a DNS A record for the hostname ->
+    server IP so its TLS cert can issue.
+    """
+    cfg = cfg_module.load(config_path, {'ssh_key': ssh_key} if ssh_key else {})
+    domain = portal_domain or cfg.get('portal_domain')
+    if not domain:
+        raise click.UsageError("No portal domain: pass --portal-domain or set portal_domain in config.")
+
+    state = secrets_module.load_state()
+    target_ip = server_ip or state.get('server_ip')
+    if not target_ip:
+        raise click.UsageError("No server IP: pass --server-ip or provision first (writes state).")
+
+    ssh = ssh_module.connect(
+        target_ip, cfg['ssh_private_key'],
+        username=cfg['ssh_user'],
+        use_sudo=(cfg['ssh_user'] != 'root'),
+    )
+    try:
+        authentik_module.install_portal_redirect(ssh, domain, cfg['authentik']['domain'])
+    finally:
+        ssh.close()
+    click.echo(f"""
+Portal published. Add this DNS record so its TLS cert can issue:
+  {domain}  ->  {target_ip}
+
+Then https://{domain} lands users on your Authentik app dashboard.
+""")
+
+
+@cli.command('build-runner-image')
+@click.option('--config', 'config_path', type=click.Path(exists=True), default='config.yaml', help='Path to YAML config file')
+@click.option('--ssh-key', 'ssh_key', type=click.Path(exists=True), default=None, help='SSH private key path (overrides config)')
+@click.option('--server-ip', default=None, help='Target server IP (overrides .bootstrapper-state.yaml)')
+def build_runner_image(config_path, ssh_key, server_ip):
+    """(Re)build the baked CI runner image and refresh the runner to use it.
+
+    Builds platform-ci:latest on the host, re-applies the runner config (mapping
+    ubuntu-latest/docker/ci labels to it) and restarts the runner. Use this to
+    iterate on the image without a full re-provision.
+    """
+    cfg = cfg_module.load(config_path, {'ssh_key': ssh_key} if ssh_key else {})
+    state = secrets_module.load_state()
+    target_ip = server_ip or state.get('server_ip')
+    runner_token = state.get('runner_token')
+    if not target_ip:
+        raise click.UsageError("No server IP: pass --server-ip or provision first (writes state).")
+    if not runner_token:
+        raise click.UsageError("No runner_token in state; run a full provision first.")
+
+    ssh = ssh_module.connect(
+        target_ip, cfg['ssh_private_key'],
+        username=cfg['ssh_user'],
+        use_sudo=(cfg['ssh_user'] != 'root'),
+    )
+    try:
+        forgejo_module.deploy_runner(
+            ssh,
+            runner_token,
+            forgejo_url="http://forgejo-http.forgejo.svc.cluster.local:3000",
+            forgejo_domain=cfg['forgejo']['domain'],
+        )
+    finally:
+        ssh.close()
+    click.echo("\nRunner image rebuilt and runner refreshed. Jobs now start from the baked image.")
+
 
 @cli.command('server-types')
 @click.option('--api-token', required=True, envvar='HCLOUD_TOKEN', help='Hetzner API token')

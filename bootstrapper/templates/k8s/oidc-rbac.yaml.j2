@@ -1,0 +1,20 @@
+# Maps Authentik groups (via the OIDC `groups` claim k3s reads) to cluster roles.
+# Subjects are Groups, so membership is driven entirely from Authentik — add a
+# user to a group there and their Headlamp/kubectl access follows automatically.
+{% for b in bindings %}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: oidc-group-{{ b.name }}
+  labels:
+    app.kubernetes.io/managed-by: bootstrapper
+subjects:
+  - kind: Group
+    name: "{{ b.group }}"
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: {{ b.role }}
+  apiGroup: rbac.authorization.k8s.io
+{% endfor %}

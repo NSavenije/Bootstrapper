@@ -1,0 +1,31 @@
+# Headlamp — Kubernetes web UI, logged in through Authentik.
+#
+# It reuses the existing "kubernetes" OIDC client (same client_id k3s trusts as
+# --oidc-client-id), so a user's Authentik login yields a token the API server
+# accepts. Headlamp forwards that token per-user, so what you can see in the UI
+# is exactly what your k8s RBAC allows (see oidc-rbac.yaml.j2).
+config:
+  inCluster: true
+  oidc:
+    clientID: "{{ client_id }}"
+    clientSecret: "{{ client_secret }}"
+    issuerURL: "https://{{ authentik_domain }}/application/o/kubernetes/"
+    scopes: "openid profile email groups"
+    callbackURL: "https://{{ headlamp_domain }}/oidc-callback"
+
+ingress:
+  enabled: true
+  ingressClassName: traefik
+  annotations:
+    cert-manager.io/cluster-issuer: {{ cluster_issuer }}
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+  hosts:
+    - host: {{ headlamp_domain }}
+      paths:
+        - path: /
+          type: Prefix
+  tls:
+    - secretName: headlamp-tls
+      hosts:
+        - {{ headlamp_domain }}

@@ -122,6 +122,7 @@ def create_oauth_provider(
     slug: str,
     app_name: str,
     redirect_uris: list[dict],
+    launch_url: str | None = None,
 ) -> tuple[str, str]:
     """Create or update an Authentik OAuth2 provider + application.
 
@@ -165,12 +166,30 @@ def create_oauth_provider(
     client_id = provider["client_id"]
     client_secret = provider.get("client_secret", "")
 
+    # meta_launch_url is what Authentik opens when a user clicks the application
+    # tile in their library. OIDC is SP-initiated, so an empty launch URL sends
+    # the user to the app's front page *without* triggering login — which looks
+    # like SSO is broken. Pointing it at the SP's login-initiation endpoint makes
+    # the tile start the OIDC flow, giving a true "click app -> logged in" UX.
+    app_body = {"name": app_name, "slug": slug, "provider": provider_pk}
+    if launch_url is not None:
+        app_body["meta_launch_url"] = launch_url
+
     r = ssh_utils.cluster_curl(ssh, f"{_BASE}/core/applications/?slug={slug}", headers=headers)
     r.raise_for_status()
-    if not r.json().get("results"):
+    existing_apps = r.json().get("results", [])
+    if existing_apps:
+        r = ssh_utils.cluster_curl(
+            ssh, f"{_BASE}/core/applications/{slug}/", method='PATCH', headers=headers,
+            json_body=app_body,
+        )
+        if not r.ok:
+            raise RuntimeError(f"Application update failed ({r.status_code}): {r.text}")
+        click.echo(f"  Updated Authentik application for {name}.")
+    else:
         r = ssh_utils.cluster_curl(
             ssh, f"{_BASE}/core/applications/", method='POST', headers=headers,
-            json_body={"name": app_name, "slug": slug, "provider": provider_pk},
+            json_body=app_body,
         )
         if not r.ok:
             raise RuntimeError(f"Application creation failed ({r.status_code}): {r.text}")
@@ -190,11 +209,18 @@ def configure_oauth_provider(client: paramiko.SSHClient, bootstrap_token: str, f
             "matching_mode": "strict",
             "url": f"https://{forgejo_domain}/user/oauth2/authentik/callback",
         }],
+        # Forgejo's /user/oauth2/<source-name> route kicks off the OIDC login
+        # directly, so clicking the Forgejo tile in Authentik logs the user in.
+        launch_url=f"https://{forgejo_domain}/user/oauth2/authentik",
     )
 
 
-def configure_k3s_oidc(ssh: paramiko.SSHClient, bootstrap_token: str) -> None:
-    """Create Authentik OIDC provider for Kubernetes.
+def configure_k3s_oidc(
+    ssh: paramiko.SSHClient,
+    bootstrap_token: str,
+    headlamp_domain: str | None = None,
+) -> tuple[str, str]:
+    """Create/update the Authentik OIDC provider for Kubernetes. Returns (client_id, client_secret).
 
     kube-apiserver requires HTTPS for the OIDC issuer URL, so we cannot
     configure k3s during bootstrap (DNS/TLS not live yet). The provider is
@@ -206,14 +232,98 @@ def configure_k3s_oidc(ssh: paramiko.SSHClient, bootstrap_token: str) -> None:
         - oidc-username-claim=email
         - oidc-groups-claim=groups' >> /etc/rancher/k3s/config.yaml
       /usr/local/bin/k3s-killall.sh && systemctl start k3s
+
+    When `headlamp_domain` is set, Headlamp reuses this same client (so its tokens
+    carry the audience k3s trusts): its callback is added as a redirect URI and the
+    Kubernetes app tile is pointed at Headlamp instead of being hidden.
     """
     click.echo("  Creating Authentik OIDC provider for Kubernetes...")
-    create_oauth_provider(
+    # localhost:8000 is the kubectl oidc-login (CLI) callback — always present.
+    redirect_uris = [{"matching_mode": "strict", "url": "http://localhost:8000"}]
+    # CLI-only by default: no browsable UI, so hide the tile from the user library.
+    launch_url = "blank://blank"
+    if headlamp_domain:
+        redirect_uris.append(
+            {"matching_mode": "strict", "url": f"https://{headlamp_domain}/oidc-callback"}
+        )
+        launch_url = f"https://{headlamp_domain}"
+
+    client_id, client_secret = create_oauth_provider(
         ssh, bootstrap_token,
         name="kubernetes", slug="kubernetes", app_name="Kubernetes",
-        redirect_uris=[{"matching_mode": "strict", "url": "http://localhost:8000"}],
+        redirect_uris=redirect_uris,
+        launch_url=launch_url,
     )
     click.echo("  Authentik k8s OIDC provider created (k3s wired after DNS/TLS is live).")
+    return client_id, client_secret
+
+
+def ensure_admin_token(
+    ssh: paramiko.SSHClient,
+    candidate_token: str | None = None,
+    identifier: str = "bootstrapper-cli",
+) -> str:
+    """Return a working Authentik API token, minting a non-expiring akadmin token if needed.
+
+    The bootstrap token expires on long-lived servers, so standalone post-provision
+    commands can't rely on the one in the state file. If `candidate_token` still
+    works it is returned as-is; otherwise a stable non-expiring token is created
+    (idempotently, by identifier) via `ak shell`. Requires the curl pod to be up.
+    """
+    if candidate_token:
+        r = ssh_utils.cluster_curl(
+            ssh, f"{_BASE}/core/users/?page_size=1",
+            headers={"Authorization": f"Bearer {candidate_token}"},
+        )
+        if r.ok:
+            return candidate_token
+        click.echo("  Stored Authentik token invalid/expired; minting a fresh one...")
+
+    script = (
+        "from authentik.core.models import Token, TokenIntents, User\n"
+        "u = User.objects.get(username='akadmin')\n"
+        f"t = Token.objects.filter(identifier={identifier!r}).first()\n"
+        "if t is None:\n"
+        f"    t = Token.objects.create(identifier={identifier!r}, user=u,\n"
+        "        intent=TokenIntents.INTENT_API, expiring=False, description='bootstrapper CLI')\n"
+        "print('TOKEN|' + t.key)\n"
+    )
+    out = ssh_utils.run_with_stdin(
+        ssh,
+        "k3s kubectl exec -n authentik deploy/authentik-server -i -- ak shell",
+        script.encode(),
+    )
+    for line in out.splitlines():
+        if line.startswith("TOKEN|"):
+            return line.split("|", 1)[1].strip()
+    raise RuntimeError(f"could not mint Authentik token; ak shell output:\n{out[-500:]}")
+
+
+def install_portal_redirect(
+    client: paramiko.SSHClient,
+    portal_domain: str,
+    authentik_domain: str,
+    cluster_issuer: str = "letsencrypt-prod",
+) -> None:
+    """Publish portal.<domain> as a friendly redirect to the Authentik dashboard.
+
+    Deploys a Traefik redirect Middleware + Ingress (with its own cert) so the
+    memorable portal.<domain> lands users on the Authentik app launcher — the
+    platform's single sign-on front door — without exposing Authentik on a second
+    hostname.
+    """
+    click.echo(f"  Publishing portal redirect {portal_domain} -> Authentik dashboard...")
+    manifest = manifests.render(
+        'k8s/portal-redirect.yaml.j2',
+        portal_domain=portal_domain,
+        authentik_domain=authentik_domain,
+        cluster_issuer=cluster_issuer,
+    )
+    remote_path = f"{helm_module.DEPLOY_DIR}/portal-redirect.yaml"
+    ssh_utils.run(client, f"mkdir -p {helm_module.DEPLOY_DIR}")
+    ssh_utils.upload(client, manifest, remote_path)
+    ssh_utils.run(client, f"k3s kubectl apply -f {remote_path}")
+    click.echo("  Portal redirect published.")
 
 
 def create_groups(client: paramiko.SSHClient, bootstrap_token: str, group_names: list[str]) -> None:
@@ -232,6 +342,65 @@ def create_groups(client: paramiko.SSHClient, bootstrap_token: str, group_names:
         if not r.ok:
             raise RuntimeError(f"Failed to create group '{name}' ({r.status_code}): {r.text}")
         click.echo(f"  Created group '{name}'.")
+
+
+def seed_demo_users(
+    ssh: paramiko.SSHClient,
+    group_names: list[str],
+    password: str,
+    email_domain: str,
+    username_prefix: str = "demo-",
+) -> list[tuple[str, str, str]]:
+    """Create one demo user per group, all sharing `password`, each a member of its group.
+
+    Purpose: give every group a ready-to-log-in account for demos and for testing
+    the SSO flows end to end (e.g. that a forgejo-admins member lands as a Forgejo
+    admin). All users share one password on purpose — these are throwaway demo
+    accounts, never real identities.
+
+    Runs against Authentik's Django shell (`ak shell`) over SSH rather than the REST
+    API: it needs no API token (the bootstrap token expires on long-lived servers)
+    and mirrors the run_with_stdin CLI pattern already used for Forgejo admin
+    commands. Idempotent — re-running resets each user's password and re-asserts
+    group membership. Groups are created if missing.
+
+    Returns a list of (username, group, "created"|"updated").
+    """
+    # Values are injected as Python literals via !r so any characters in the
+    # password/group names are safely quoted; the script is piped in on stdin.
+    script = (
+        "from authentik.core.models import User, Group\n"
+        f"groups = {list(group_names)!r}\n"
+        f"password = {password!r}\n"
+        f"email_domain = {email_domain!r}\n"
+        f"prefix = {username_prefix!r}\n"
+        "for gname in groups:\n"
+        "    group, _ = Group.objects.get_or_create(name=gname)\n"
+        "    username = prefix + gname\n"
+        "    user, created = User.objects.get_or_create(username=username, defaults={'name': 'Demo ' + gname})\n"
+        "    user.name = 'Demo ' + gname\n"
+        "    user.email = username + '@' + email_domain\n"
+        "    user.is_active = True\n"
+        "    user.set_password(password)\n"
+        "    user.save()\n"
+        "    user.ak_groups.add(group)\n"
+        "    print('DEMOUSER|' + username + '|' + gname + '|' + ('created' if created else 'updated'))\n"
+    )
+
+    out = ssh_utils.run_with_stdin(
+        ssh,
+        "k3s kubectl exec -n authentik deploy/authentik-server -i -- ak shell",
+        script.encode(),
+    )
+
+    results: list[tuple[str, str, str]] = []
+    for line in out.splitlines():
+        if line.startswith("DEMOUSER|"):
+            _, username, gname, action = line.split("|", 3)
+            results.append((username, gname, action))
+    if not results:
+        raise RuntimeError(f"seed_demo_users produced no users; ak shell output:\n{out[-500:]}")
+    return results
 
 
 def _get_or_create_groups_scope_mapping(ssh: paramiko.SSHClient, base: str, headers: dict) -> str:
