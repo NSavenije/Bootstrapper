@@ -13,7 +13,10 @@ spec:
           secretName: platform-forgejo-token
           key: token
       filters:
+        # Repos opting into auto-sync are owned by ${TEAM}-prd-auto; excluding them
+        # here keeps exactly one ApplicationSet generating '<repo>-prd'.
         - pathsExist: ["k8s"]
+          pathsDoNotExist: ["k8s/.prod-only"]
   template:
     metadata:
       name: '{{repository}}-prd'

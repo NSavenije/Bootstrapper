@@ -1,0 +1,49 @@
+# Auto-syncing production ApplicationSet — opt-in, per repo.
+#
+# The default landing zone gates production behind a manual sync (appset-prd-template).
+# Some apps don't want that gate: a static site with no dev counterpart has nothing to
+# stage, and a manual step just means it drifts. Such a repo opts in by committing a
+# `k8s/.prod-only` marker, which routes it here and excludes it from both the dev and
+# the manual-prd sets — so it deploys to <team>-prd, automatically, and nowhere else.
+#
+# The marker lives in the app repo on purpose: app teams never edit platform-config,
+# so opting in stays a self-service change on their side (see README).
+#
+# The three prd/dev sets MUST stay mutually exclusive on this marker. Two sets matching
+# the same repo would generate two Applications with the same name, and for prd they'd
+# fight over one namespace — same-host Ingresses, non-deterministic routing.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: ${TEAM}-prd-auto
+  namespace: argocd
+spec:
+  generators:
+  - scmProvider:
+      gitea:
+        owner: ${FORGEJO_ORG}
+        api: https://${FORGEJO_DOMAIN}/
+        tokenRef:
+          secretName: platform-forgejo-token
+          key: token
+      filters:
+        - pathsExist: ["k8s", "k8s/.prod-only"]
+  template:
+    metadata:
+      name: '{{repository}}-prd'
+      namespace: argocd
+    spec:
+      project: ${TEAM}
+      source:
+        repoURL: 'https://${FORGEJO_DOMAIN}/{{organization}}/{{repository}}'
+        targetRevision: HEAD
+        path: k8s
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: ${TEAM}-prd
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=false

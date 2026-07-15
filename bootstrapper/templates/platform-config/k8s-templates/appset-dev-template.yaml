@@ -13,7 +13,11 @@ spec:
           secretName: platform-forgejo-token
           key: token
       filters:
+        # `.prod-only` repos have no dev counterpart. Without this they'd also deploy
+        # to ${TEAM}-dev, and a single-environment app hardcodes its production
+        # hostname — two namespaces would then serve Ingresses for the same host.
         - pathsExist: ["k8s"]
+          pathsDoNotExist: ["k8s/.prod-only"]
   template:
     metadata:
       name: '{{repository}}-dev'

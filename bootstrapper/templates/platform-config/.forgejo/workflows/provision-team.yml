@@ -92,6 +92,10 @@ jobs:
             sed "s|\${TEAM}|$TEAM_NAME|g; s|\${FORGEJO_ORG}|$FORGEJO_ORG|g; s|\${FORGEJO_DOMAIN}|$FORGEJO_DOMAIN|g" \
               k8s-templates/appset-prd-template.yaml | kubectl apply -f -
 
+            # 5b. Create prd ApplicationSet (auto-sync) for repos with a k8s/.prod-only marker
+            sed "s|\${TEAM}|$TEAM_NAME|g; s|\${FORGEJO_ORG}|$FORGEJO_ORG|g; s|\${FORGEJO_DOMAIN}|$FORGEJO_DOMAIN|g" \
+              k8s-templates/appset-prd-auto-template.yaml | kubectl apply -f -
+
             # 6. Create Forgejo org (idempotent)
             HTTP_STATUS=$(curl -s -o /tmp/org-response.json -w "%{http_code}" -X POST "$FORGEJO_URL/api/v1/orgs" \
               -H "Authorization: token $FORGEJO_TOKEN" \
