@@ -227,6 +227,13 @@ def provision(config_path, provider, forgejo_version, authentik_version, ssh_key
                 gen['umami_db_password'], gen['umami_app_secret'],
                 cluster_issuer=cluster_issuer,
             )
+            # Umami OSS has no OIDC, so it can't be a real SSO app. Surface it on the
+            # Authentik dashboard as a bookmark tile so it isn't invisible there.
+            authentik_module.create_link_application(
+                ssh, gen['authentik_bootstrap_token'],
+                name="Umami", slug="umami",
+                launch_url=f"https://{cfg['analytics_domain']}",
+            )
 
         # --- Step 6: Seed platform-config repository ---
         click.echo("\n[6/6] Seeding platform-config repository in Forgejo...")
@@ -458,6 +465,17 @@ def install_analytics(config_path, ssh_key, server_ip, analytics_domain):
         analytics_module.install_umami(
             ssh, domain, gen['umami_db_password'], gen['umami_app_secret'],
         )
+        # Surface Umami on the Authentik dashboard as a bookmark tile. Umami OSS has
+        # no OIDC, so this is a launch link, not real SSO. Needs the curl pod + a live
+        # token (the stored bootstrap token may have expired on a long-lived server).
+        ssh_module.start_curl_pod(ssh)
+        try:
+            token = authentik_module.ensure_admin_token(ssh, state.get('authentik_bootstrap_token'))
+            authentik_module.create_link_application(
+                ssh, token, name="Umami", slug="umami", launch_url=f"https://{domain}",
+            )
+        finally:
+            ssh_module.stop_curl_pod(ssh)
     finally:
         ssh.close()
     click.echo(f"""

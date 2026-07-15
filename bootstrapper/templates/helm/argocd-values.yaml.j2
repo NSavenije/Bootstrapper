@@ -1,6 +1,16 @@
 server:
   extraArgs:
     - --insecure
+  service:
+    annotations:
+      # argocd-server runs in --insecure mode (plain HTTP on :8080), but the
+      # argo-cd chart's server Ingress hard-wires its backend to the service's
+      # https-named 443 port regardless of `ingress.servicePort`. Traefik infers
+      # HTTPS for any backend port named `https`/443 and then fails the TLS
+      # handshake against the plaintext server -> 502 Bad Gateway on every request.
+      # This annotation forces Traefik to speak HTTP to the backend, TLS being
+      # terminated at the Ingress by cert-manager.
+      traefik.ingress.kubernetes.io/service.serversscheme: http
   ingress:
     enabled: true
     ingressClassName: traefik

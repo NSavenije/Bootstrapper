@@ -73,6 +73,10 @@ def wire_oidc(client: paramiko.SSHClient, authentik_domain: str) -> None:
         return
 
     issuer_url = f"https://{authentik_domain}/application/o/kubernetes/"
+    # oidc-client-id MUST equal the Authentik kubernetes provider's client_id: the
+    # apiserver rejects any token whose `aud` doesn't match it. configure_k3s_oidc
+    # pins that provider's client_id to the literal "kubernetes" precisely so this
+    # hardcoded value is correct and stable across rebuilds — keep the two in sync.
     ssh_utils.run(client, (
         f"printf 'kube-apiserver-arg:\\n"
         f"  - oidc-issuer-url={issuer_url}\\n"

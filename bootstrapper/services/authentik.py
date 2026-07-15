@@ -123,15 +123,28 @@ def create_oauth_provider(
     app_name: str,
     redirect_uris: list[dict],
     launch_url: str | None = None,
+    client_id: str | None = None,
+    verified_email: bool = False,
 ) -> tuple[str, str]:
     """Create or update an Authentik OAuth2 provider + application.
 
     Idempotent: updates the provider if one with the given name already exists.
     Returns (client_id, client_secret).
+
+    Pass `client_id` to pin a fixed, human-readable client id instead of Authentik's
+    random one. Required for the kubernetes provider: the kube-apiserver validates a
+    token's `aud` against a hardcoded `--oidc-client-id`, so the value must be known
+    ahead of time and stable across rebuilds (see configure_k3s_oidc / k8s.py).
+
+    Pass `verified_email` for consumers that reject tokens with email_verified=false
+    (the kube-apiserver does; see _get_or_create_verified_email_scope_mapping).
     """
     headers = {"Authorization": f"Bearer {bootstrap_token}", "Content-Type": "application/json"}
 
-    scope_pks = _get_scope_mappings(ssh, _BASE, headers, ["openid", "email", "profile"])
+    wanted_scopes = ["openid", "profile"] if verified_email else ["openid", "email", "profile"]
+    scope_pks = _get_scope_mappings(ssh, _BASE, headers, wanted_scopes)
+    if verified_email:
+        scope_pks.append(_get_or_create_verified_email_scope_mapping(ssh, _BASE, headers))
     scope_pks.append(_get_or_create_groups_scope_mapping(ssh, _BASE, headers))
 
     payload = {
@@ -143,7 +156,15 @@ def create_oauth_provider(
         "include_claims_in_id_token": True,
         "property_mappings": scope_pks,
         "redirect_uris": redirect_uris,
+        # Authentik 2024.10+ made grant_types an explicit per-provider allow-list
+        # that defaults to empty. An empty list rejects every /authorize request
+        # with "Invalid grant_type for provider" (the browser sees Forgejo/ArgoCD's
+        # generic "error processing the authorization request"). All our SPs use the
+        # standard authorization-code flow; refresh_token keeps sessions renewable.
+        "grant_types": ["authorization_code", "refresh_token"],
     }
+    if client_id is not None:
+        payload["client_id"] = client_id
 
     r = ssh_utils.cluster_curl(ssh, f"{_BASE}/providers/oauth2/?name={name}", headers=headers)
     r.raise_for_status()
@@ -215,6 +236,39 @@ def configure_oauth_provider(client: paramiko.SSHClient, bootstrap_token: str, f
     )
 
 
+def create_link_application(
+    ssh: paramiko.SSHClient,
+    bootstrap_token: str,
+    name: str,
+    slug: str,
+    launch_url: str,
+) -> None:
+    """Create/update a provider-less Authentik application: a dashboard bookmark tile.
+
+    For services that can't speak OIDC — e.g. Umami OSS, which ships only its own
+    local admin login — this still surfaces them on the Authentik dashboard as a
+    launch link so they sit alongside the SSO-integrated apps. Users authenticate
+    with the service's own credentials after clicking through. Idempotent.
+    """
+    headers = {"Authorization": f"Bearer {bootstrap_token}", "Content-Type": "application/json"}
+    app_body = {
+        "name": name,
+        "slug": slug,
+        "meta_launch_url": launch_url,
+        "open_in_new_tab": True,
+    }
+
+    r = ssh_utils.cluster_curl(ssh, f"{_BASE}/core/applications/?slug={slug}", headers=headers)
+    r.raise_for_status()
+    if r.json().get("results"):
+        r = ssh_utils.cluster_curl(ssh, f"{_BASE}/core/applications/{slug}/", method='PATCH', headers=headers, json_body=app_body)
+    else:
+        r = ssh_utils.cluster_curl(ssh, f"{_BASE}/core/applications/", method='POST', headers=headers, json_body=app_body)
+    if not r.ok:
+        raise RuntimeError(f"Link application '{name}' failed ({r.status_code}): {r.text}")
+    click.echo(f"  Authentik dashboard tile for {name} ready.")
+
+
 def configure_k3s_oidc(
     ssh: paramiko.SSHClient,
     bootstrap_token: str,
@@ -253,6 +307,12 @@ def configure_k3s_oidc(
         name="kubernetes", slug="kubernetes", app_name="Kubernetes",
         redirect_uris=redirect_uris,
         launch_url=launch_url,
+        # Pinned so it matches the kube-apiserver's hardcoded --oidc-client-id
+        # (k8s.py) and stays stable across rebuilds. Headlamp reuses this client.
+        client_id="kubernetes",
+        # --oidc-username-claim=email means the apiserver rejects tokens whose
+        # email_verified isn't true, and Authentik's built-in email mapping says false.
+        verified_email=True,
     )
     click.echo("  Authentik k8s OIDC provider created (k3s wired after DNS/TLS is live).")
     return client_id, client_secret
@@ -401,6 +461,41 @@ def seed_demo_users(
     if not results:
         raise RuntimeError(f"seed_demo_users produced no users; ak shell output:\n{out[-500:]}")
     return results
+
+
+_VERIFIED_EMAIL_MAPPING_NAME = "OAuth Mapping: email (verified)"
+
+
+def _get_or_create_verified_email_scope_mapping(ssh: paramiko.SSHClient, base: str, headers: dict) -> str:
+    """Return the PK of an 'email' scope mapping that asserts email_verified: true.
+
+    Authentik has no email-verification concept, so its built-in email mapping
+    hardcodes `email_verified: False`. The kube-apiserver refuses any token with a
+    falsy email_verified when --oidc-username-claim=email ("oidc: email not
+    verified"), which rejects every Headlamp login. We can't patch the built-in
+    mapping: it's blueprint-managed (goauthentik.io/providers/oauth2/scope-email)
+    and an Authentik upgrade would silently revert it. So we own a separate mapping
+    and attach it only to the kubernetes provider, leaving other apps untouched.
+
+    Trusting these addresses is sound here: they're set by the operator during
+    provisioning, not self-registered.
+    """
+    r = ssh_utils.cluster_curl(ssh, f"{base}/propertymappings/provider/scope/?scope_name=email", headers=headers)
+    r.raise_for_status()
+    for m in r.json().get("results", []):
+        if m["name"] == _VERIFIED_EMAIL_MAPPING_NAME:
+            return m["pk"]
+
+    payload = {
+        "name": _VERIFIED_EMAIL_MAPPING_NAME,
+        "scope_name": "email",
+        "description": "Email claim with email_verified=true, required by kube-apiserver",
+        "expression": 'return {"email": request.user.email, "email_verified": True}',
+    }
+    r = ssh_utils.cluster_curl(ssh, f"{base}/propertymappings/provider/scope/", method='POST', headers=headers, json_body=payload)
+    if not r.ok:
+        raise RuntimeError(f"Failed to create verified email scope mapping ({r.status_code}): {r.text}")
+    return r.json()["pk"]
 
 
 def _get_or_create_groups_scope_mapping(ssh: paramiko.SSHClient, base: str, headers: dict) -> str:
