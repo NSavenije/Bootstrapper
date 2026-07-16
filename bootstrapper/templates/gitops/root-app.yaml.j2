@@ -1,0 +1,17 @@
+# Root of the App-of-Apps: points Argo CD at apps/, which holds one child
+# Application per platform service. Applied once by the bootstrapper (Layer 1);
+# everything below it is reconciled from git.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: platform-root
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: {{ repo_url }}
+    targetRevision: main
+    path: apps
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd

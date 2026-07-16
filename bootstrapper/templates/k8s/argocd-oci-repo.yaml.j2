@@ -1,0 +1,15 @@
+# Argo CD repository credential for the Forgejo Helm OCI registry.
+# Anonymous pull; the secret only exists to set enableOCI for this registry,
+# which Application sources cannot express inline.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: forgejo-helm-oci
+  namespace: argocd
+  labels:
+    argocd.argoproj.io/secret-type: repository
+stringData:
+  name: forgejo-helm
+  type: helm
+  url: code.forgejo.org/forgejo-helm
+  enableOCI: "true"

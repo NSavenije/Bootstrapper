@@ -18,6 +18,7 @@ from bootstrapper.services import analytics as analytics_module
 from bootstrapper.services import argocd as argocd_module
 from bootstrapper.services import authentik as authentik_module
 from bootstrapper.services import forgejo as forgejo_module
+from bootstrapper.services import gitops as gitops_module
 from bootstrapper.services import headlamp as headlamp_module
 from bootstrapper.services import k8s as k8s_module
 from bootstrapper.services import sso as sso_module
@@ -91,6 +92,8 @@ def provision(config_path, provider, forgejo_version, authentik_version, ssh_key
     # --- Step 3: Install platform services via Helm ---
     click.echo("\n[3/6] Installing Helm, cert-manager, Forgejo and Authentik...")
     forgejo_version = forgejo_module.resolve_forgejo_version(cfg['forgejo_version'])
+    state['forgejo_version'] = forgejo_version
+    secrets_module.save_state(state)
     helm_module.install_helm(ssh)
     k8s_module.restore_tls_secrets(ssh, state.get('tls_secrets', {}))
     if cfg['provider'] == 'local':
@@ -185,6 +188,9 @@ def provision(config_path, provider, forgejo_version, authentik_version, ssh_key
             ssh, gen['authentik_bootstrap_token'],
             headlamp_domain=cfg.get('headlamp_domain'),
         )
+        state['k8s_client_id'] = k8s_client_id
+        state['k8s_client_secret'] = k8s_client_secret
+        secrets_module.save_state(state)
         if cfg.get('headlamp_domain'):
             headlamp_module.install_headlamp(
                 ssh, cfg['headlamp_domain'], authentik_cfg['domain'],
@@ -196,7 +202,7 @@ def provision(config_path, provider, forgejo_version, authentik_version, ssh_key
                 admin_group=authentik_cfg.get('admin_group', 'forgejo-admins'),
             )
         argocd_module.install_argocd(ssh, cfg['argocd_domain'], cluster_issuer=cluster_issuer)
-        argocd_module.configure_argocd_sso(
+        argocd_client_id, _ = argocd_module.configure_argocd_sso(
             ssh,
             gen['authentik_bootstrap_token'],
             authentik_cfg['domain'],
@@ -205,6 +211,8 @@ def provision(config_path, provider, forgejo_version, authentik_version, ssh_key
             forgejo_cfg['admin_username'],
             forgejo_api_token,
         )
+        state['argocd_client_id'] = argocd_client_id
+        secrets_module.save_state(state)
         forgejo_module.deploy_runner(
             ssh,
             runner_token,
@@ -535,6 +543,43 @@ Portal published. Add this DNS record so its TLS cert can issue:
   {domain}  ->  {target_ip}
 
 Then https://{domain} lands users on your Authentik app dashboard.
+""")
+
+
+@cli.command('install-gitops')
+@click.option('--config', 'config_path', type=click.Path(exists=True), default='config.yaml', help='Path to YAML config file')
+@click.option('--ssh-key', 'ssh_key', type=click.Path(exists=True), default=None, help='SSH private key path (overrides config)')
+@click.option('--server-ip', default=None, help='Target server IP (overrides .bootstrapper-state.yaml)')
+def install_gitops(config_path, ssh_key, server_ip):
+    """Seed the platform-gitops repo and apply the App-of-Apps root Application.
+
+    Renders one Argo CD Application per platform service from the same
+    templates `provision` uses (adoption is a no-op diff), pushes them to a
+    private platform-team/platform-gitops repo in Forgejo, and applies the
+    platform-root Application. Idempotent — re-run after template changes.
+    """
+    cfg = cfg_module.load(config_path, {'ssh_key': ssh_key} if ssh_key else {})
+    state = secrets_module.load_state()
+    target_ip = server_ip or state.get('server_ip')
+    if not target_ip:
+        raise click.UsageError("No server IP: pass --server-ip or provision first (writes state).")
+    if not state.get('forgejo_api_token'):
+        raise click.UsageError("No forgejo_api_token in state: run provision first.")
+
+    ssh = ssh_module.connect(
+        target_ip, cfg['ssh_private_key'],
+        username=cfg['ssh_user'],
+        use_sudo=(cfg['ssh_user'] != 'root'),
+    )
+    ssh_module.start_curl_pod(ssh)
+    try:
+        gitops_module.seed_gitops(ssh, cfg, state)
+    finally:
+        ssh_module.stop_curl_pod(ssh)
+        ssh.close()
+    click.echo(f"""
+platform-gitops seeded. Argo CD now shows the platform as Applications:
+  https://{cfg['argocd_domain']}/applications
 """)
 
 

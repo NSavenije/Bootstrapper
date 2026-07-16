@@ -1,0 +1,18 @@
+# platform-gitops
+
+Desired state of the platform itself (Layer 2 of the App-of-Apps model).
+Seeded and updated by `bootstrapper install-gitops`; reconciled by Argo CD.
+
+- `apps/` — one Argo CD Application per platform service. The root Application
+  (`platform-root`, applied by the bootstrapper) syncs this directory.
+- `manifests/` — plain-YAML payloads for the non-Helm Applications
+  (ClusterIssuer, OIDC RBAC, portal redirect, CI runner).
+
+Do not edit by hand while the bootstrapper CLI is still the source of truth —
+change the templates in the Bootstrapper repo and re-run `install-gitops`.
+
+| Service | Chart | Pinned version |
+|---|---|---|
+{% for row in chart_table -%}
+| {{ row.name }} | {{ row.chart }} | {{ row.revision }} |
+{% endfor %}

@@ -39,8 +39,8 @@ def configure_argocd_sso(
     forgejo_domain: str,
     forgejo_admin_username: str,
     forgejo_api_token: str,
-) -> None:
-    """Configure Argo CD SSO via Authentik OIDC.
+) -> tuple[str, str]:
+    """Configure Argo CD SSO via Authentik OIDC. Returns (client_id, client_secret).
 
     Creates an Authentik OAuth2 provider + application for Argo CD, then
     patches argocd-cm with the OIDC config and argocd-rbac-cm with the
@@ -60,6 +60,7 @@ def configure_argocd_sso(
     _patch_argocd_cm(client, authentik_domain, argocd_domain, client_id)
     _patch_argocd_rbac_cm(client)
     click.echo("  Argo CD SSO configured.")
+    return client_id, client_secret
 
 
 def _apply_argocd_sso_secrets(
