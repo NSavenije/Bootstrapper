@@ -216,4 +216,17 @@ Each of these is an already-debugged, non-obvious fact. Preserve them; the verif
 - **Secret management:** sealed-secrets vs SOPS+age vs Argo CD Vault plugin. Needed before Phase 3 puts OIDC secrets in git.
 - **Layer 1 tooling:** keep the thin Python CLI vs move to Terraform/OpenTofu + cloud-init. Phase 2 works either way; decide before Phase 5.
 - **Umami password:** Umami has no bootstrap env var — confirm the Job approach is still needed, or whether a newer Umami supports declarative admin creds.
-- **App-of-Apps repo location:** its own Forgejo repo (dogfoods the platform) vs a directory in this repo. A separate repo is more faithful to GitOps but adds a bootstrap chicken-and-egg (Argo needs the repo before it can manage the repo).
+- **App-of-Apps repo location:** ✅ RESOLVED (Phase 1) — its own private Forgejo repo, `platform-team/platform-gitops`, rendered and seeded by `bootstrapper install-gitops` from the same Jinja templates provision uses. The chicken-and-egg is handled the same way `platform-config` already is: the CLI creates and pushes the repo, then applies the root Application.
+
+## Appendix C — Decisions log / learnings per phase
+
+**Phase 0 (2026-07-16, gate GREEN):** baseline on `nsavenije.nl` (box 46.225.179.83, workspace `Repos\bootstrapper-dev`). Three tool bugs found and fixed on the `app-of-apps` branch: Forgejo v16.0.0 released without a container image (`resolve_forgejo_version` now verifies the image manifest exists), Helm refusing `upgrade --install` after a failed first install (auto-uninstall of failed rev-1 releases), and k3s bouncing once (~20s) after `k3s-killall` + start (`_wait_for_k3s_stable` requires 6 consecutive `/readyz` OKs). `wire-k3s-oidc` is a required post-provision step. First Forgejo SSO login lands on `/user/link_account` (baseline behavior; candidate to enable oauth2_client auto-registration in the rewrite). Gate evidence: 6 endpoints 200+LE, `verify_sso.py` full round trips (Argo CD, Forgejo, kubernetes client → apiserver listed nodes), provision-team CI green, `baseline.txt` captured.
+
+**Phase 1 (2026-07-16, gate GREEN):** `install-gitops` seeds 15 files; 11 Applications all Synced+Healthy after adoption syncs; **zero resource recreations** (UID-compared); only churn was argocd rolling its own server/repo-server (live pods predated the CLI's argocd-cm OIDC patch — the rendered `checksum/cm` was the correct one). Learnings baked into `services/gitops.py`:
+- Argo CD 3.x tracks by **annotation** (`argocd.argoproj.io/tracking-id`); adopted resources need one no-op sync to stamp it — content was byte-identical for 7/9 apps on first diff.
+- The Bitnami postgres subchart **re-generates `postgres-password` per render** → `ignoreDifferences` + `RespectIgnoreDifferences` on the authentik app, or it flaps OutOfSync forever.
+- `argocd-rbac-cm` (workflow-rewritten per team) and `argocd-secret` (runtime keys + CLI-applied OIDC secret) are ignoreDifferences until Phases 3–4 make them declarative.
+- Helm-OCI charts (Forgejo) need a repository Secret with `enableOCI: "true"` (`argocd-oci-repo.yaml.j2`); Application sources cannot express it inline.
+- The argocd app has three `requiresPruning` leftovers (redis-secret-init hook artifacts): **never enable prune on the argocd app** until they are accounted for.
+- Do NOT change the global `application.resourceTrackingMethod`: tenant appset apps already track by annotation.
+- Provision now persists `forgejo_version`, `k8s_client_id/secret`, `argocd_client_id` in state; `install-gitops` falls back to reading `/opt/bootstrapper/helm-values-*.yaml` on boxes provisioned before that.
