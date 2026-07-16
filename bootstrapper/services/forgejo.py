@@ -153,6 +153,35 @@ def create_runner_token(client: paramiko.SSHClient, username: str, api_token: st
     return r.json()["token"]
 
 
+def apply_wiring_job(client: paramiko.SSHClient, forgejo_domain: str,
+                     authentik_domain: str, admin_group: str) -> None:
+    """Run the forgejo-wiring Job: platform token + argocd creds Secrets,
+    runner registration-token Secret, and the Authentik OAuth source.
+
+    The same manifests are git-owned via the forgejo-wiring app after
+    seeding, where the Job re-runs as a PostSync hook (idempotent)."""
+    from bootstrapper.services import k8s as k8s_module
+    rendered = manifests.render(
+        'k8s/forgejo-wiring-job.yaml.j2',
+        forgejo_domain=forgejo_domain,
+        authentik_domain=authentik_domain,
+        admin_group=admin_group,
+    )
+    k8s_module.apply_job_manifest(client, rendered, 'forgejo-wiring', 'forgejo')
+
+
+def read_platform_token(client: paramiko.SSHClient) -> str:
+    """Read the platform API token the forgejo-wiring Job minted."""
+    token = ssh_utils.run(
+        client,
+        "k3s kubectl get secret -n argocd platform-forgejo-token"
+        " -o jsonpath='{.data.token}' | base64 -d",
+    ).strip()
+    if not token:
+        raise RuntimeError("platform-forgejo-token Secret is empty — did the wiring Job run?")
+    return token
+
+
 def create_platform_org(client: paramiko.SSHClient, api_token: str) -> None:
     """Create the platform-team Forgejo organisation (idempotent)."""
     click.echo("  Creating platform-team Forgejo organisation...")

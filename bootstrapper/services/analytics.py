@@ -83,6 +83,28 @@ def install_umami(
     click.echo("  Umami installed.")
 
 
+def apply_wiring(ssh: paramiko.SSHClient, admin_password: str) -> None:
+    """Apply the umami-admin-credentials Secret and run the rotation Job.
+
+    The Job (also a PostSync hook of the umami-wiring app once git-owned)
+    rotates the default admin/umami login to the generated password and is
+    a no-op when the password is already set."""
+    from bootstrapper.services import k8s as k8s_module
+    ssh_utils.run(
+        ssh,
+        "k3s kubectl create namespace analytics --dry-run=client -o yaml"
+        " | k3s kubectl apply -f -",
+    )
+    ssh_utils.run(
+        ssh,
+        "k3s kubectl create secret generic umami-admin-credentials -n analytics"
+        f" --from-literal=password={shlex.quote(admin_password)}"
+        " --dry-run=client -o yaml | k3s kubectl apply -f -",
+    )
+    rendered = manifests.render('k8s/umami-wiring-job.yaml.j2')
+    k8s_module.apply_job_manifest(ssh, rendered, 'umami-wiring', 'analytics', timeout=600)
+
+
 def _login(ssh: paramiko.SSHClient, password: str) -> str | None:
     """Return an Umami API token for the admin user, or None if the password is wrong."""
     r = ssh_utils.cluster_curl(

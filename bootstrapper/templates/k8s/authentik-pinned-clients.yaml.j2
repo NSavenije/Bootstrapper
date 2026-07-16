@@ -9,7 +9,7 @@ apiVersion: v1
 kind: Secret
 metadata:
   name: authentik-pinned-clients
-  namespace: authentik
+  namespace: {{ namespace | default('authentik') }}
 stringData:
   AK_ADMIN_PASSWORD: {{ admin_password }}
   FORGEJO_OIDC_CLIENT_SECRET: {{ forgejo_oidc_client_secret }}

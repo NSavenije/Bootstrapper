@@ -180,6 +180,41 @@ def restore_tls_secrets(client: paramiko.SSHClient, saved: dict) -> None:
         click.echo(f"    {name} ({ns}) restored.")
 
 
+def apply_job_manifest(client: paramiko.SSHClient, rendered: str, job_name: str,
+                       namespace: str, timeout: int = 900) -> None:
+    """Apply a manifest containing a Job and wait for the Job to succeed.
+
+    Job pod templates are immutable, so the previous run is deleted first
+    (Argo CD's BeforeHookCreation hook policy does the same on syncs). On
+    failure or timeout the job's pod logs are surfaced.
+    """
+    path = f"{DEPLOY_DIR}/{job_name}.yaml"
+    ssh_utils.run(client, f"mkdir -p {DEPLOY_DIR}")
+    ssh_utils.upload(client, rendered, path)
+    ssh_utils.run(client, f"k3s kubectl delete job {job_name} -n {namespace} --ignore-not-found")
+    ssh_utils.run(client, f"k3s kubectl apply -f {path}")
+    click.echo(f"  Waiting for job {job_name} to complete...")
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        status = ssh_utils.run(
+            client,
+            f"k3s kubectl get job {job_name} -n {namespace} "
+            f"-o jsonpath='{{.status.succeeded}}/{{.status.failed}}' 2>/dev/null || true",
+        ).strip()
+        succeeded, _, failed = status.partition('/')
+        if succeeded.isdigit() and int(succeeded) >= 1:
+            click.echo(f"  Job {job_name} completed.")
+            return
+        if failed.isdigit() and int(failed) >= 5:
+            break
+        time.sleep(10)
+    logs = ssh_utils.run(
+        client,
+        f"k3s kubectl logs -n {namespace} job/{job_name} --tail=40 2>&1 || true",
+    )
+    raise RuntimeError(f"Job {job_name} did not succeed within {timeout}s. Logs:\n{logs}")
+
+
 def apply_cluster_issuer(client: paramiko.SSHClient, provider: str, email: str) -> str:
     """Apply the ClusterIssuer manifest directly; cert-manager must be running.
 

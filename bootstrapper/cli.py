@@ -19,9 +19,7 @@ from bootstrapper.services import argocd as argocd_module
 from bootstrapper.services import authentik as authentik_module
 from bootstrapper.services import forgejo as forgejo_module
 from bootstrapper.services import gitops as gitops_module
-from bootstrapper.services import headlamp as headlamp_module
 from bootstrapper.services import k8s as k8s_module
-from bootstrapper.services import sso as sso_module
 
 
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
@@ -123,26 +121,6 @@ def provision(config_path, provider, forgejo_version, authentik_version, ssh_key
     ssh_module.start_curl_pod(ssh)
     try:
         forgejo_module.wait_for_forgejo(ssh)
-        forgejo_module.create_admin(
-            ssh,
-            forgejo_cfg['admin_username'],
-            forgejo_cfg['admin_password'],
-            forgejo_cfg['email'],
-        )
-        forgejo_api_token = forgejo_module.create_api_token(
-            ssh,
-            forgejo_cfg['admin_username'],
-            forgejo_cfg['admin_password'],
-        )
-
-        # Runner token — fetch once, persist in state (idempotent)
-        runner_token = state.get('runner_token')
-        if not runner_token:
-            runner_token = forgejo_module.create_runner_token(
-                ssh, forgejo_cfg['admin_username'], forgejo_api_token,
-            )
-            state['runner_token'] = runner_token
-            secrets_module.save_state(state)
 
         # Authentik wiring is declared in the platform blueprint (groups,
         # providers with pinned client_id/client_secret, mappings, tiles,
@@ -150,22 +128,23 @@ def provision(config_path, provider, forgejo_version, authentik_version, ssh_key
         authentik_module.wait_for_blueprint(
             ssh, list(authentik_module.OIDC_CLIENT_IDS), timeout=600,
         )
-        client_id = authentik_module.OIDC_CLIENT_IDS['forgejo']
-        client_secret = gen['forgejo_oidc_client_secret']
 
-        click.echo("\n  Configuring SSO (Authentik -> Forgejo)...")
-        sso_module.configure_forgejo_oauth_source(
+        # Residual Forgejo wiring (platform API token + argocd credential
+        # Secrets, runner registration token, Authentik OAuth source) is an
+        # idempotent Job — re-run as a PostSync hook once the gitops repo
+        # owns it. The admin user itself is chart-managed (gitea.admin).
+        forgejo_module.apply_wiring_job(
             ssh,
+            forgejo_cfg['domain'],
             authentik_cfg['domain'],
-            client_id,
-            client_secret,
-            admin_group=authentik_cfg.get('admin_group', 'forgejo-admins'),
+            authentik_cfg.get('admin_group', 'forgejo-admins'),
         )
+        forgejo_api_token = forgejo_module.read_platform_token(ssh)
 
         # Save service state
         state['forgejo_api_token'] = forgejo_api_token
-        state['authentik_client_id'] = client_id
-        state['authentik_client_secret'] = client_secret
+        state['authentik_client_id'] = authentik_module.OIDC_CLIENT_IDS['forgejo']
+        state['authentik_client_secret'] = gen['forgejo_oidc_client_secret']
         secrets_module.save_state(state)
 
         # --- Step 5: SSO wiring + remaining Applications ---
@@ -208,10 +187,10 @@ def provision(config_path, provider, forgejo_version, authentik_version, ssh_key
             analytics_module.ensure_umami_database(ssh, gen['umami_db_password'])
             gitops_module.apply_apps(ssh, cfg, state, inputs, {'umami'})
             gitops_module.wait_for_app(ssh, 'umami')
-            # Umami ships a default admin/umami login and has no OIDC to hide behind,
-            # so rotate it before the Ingress is reachable from the internet.
+            # Umami ships a default admin/umami login and has no OIDC to hide
+            # behind, so a Job rotates it before the Ingress is reachable.
             # (Its Authentik dashboard tile is declared in the platform blueprint.)
-            analytics_module.set_admin_password(ssh, gen['umami_admin_password'])
+            analytics_module.apply_wiring(ssh, gen['umami_admin_password'])
 
         # --- Step 6: Seed the platform-config and platform-gitops repositories ---
         click.echo("\n[6/6] Seeding platform-config and platform-gitops repositories...")
@@ -222,8 +201,10 @@ def provision(config_path, provider, forgejo_version, authentik_version, ssh_key
         # (cluster-issuer, headlamp-rbac, portal-redirect, runner) sync from it.
         gitops_module.seed_gitops(ssh, cfg, state)
         for app_name in ('cluster-issuer', 'authentik-blueprint', 'headlamp-rbac',
-                         'portal-redirect', 'runner'):
+                         'portal-redirect', 'runner', 'forgejo-wiring', 'umami-wiring'):
             if app_name == 'portal-redirect' and not cfg.get('portal_domain'):
+                continue
+            if app_name == 'umami-wiring' and not cfg.get('analytics_domain'):
                 continue
             gitops_module.wait_for_app(ssh, app_name)
 
@@ -316,15 +297,10 @@ def wire_k3s_oidc(ssh_key, config_path):
         use_sudo=(cfg['ssh_user'] != 'root'),
     )
     try:
+        # The Forgejo OAuth source is owned by the forgejo-wiring Job (it uses
+        # the public discovery URL and converges once DNS/TLS answer), so this
+        # command only wires the apiserver flags and restarts k3s.
         k8s_module.wire_oidc(ssh, domain)
-        sso_module.configure_forgejo_oauth_source(
-            ssh,
-            domain,
-            state['authentik_client_id'],
-            state['authentik_client_secret'],
-            admin_group=cfg['authentik'].get('admin_group', 'forgejo-admins'),
-            public=True,
-        )
     finally:
         ssh.close()
 
@@ -399,20 +375,20 @@ def install_headlamp_cmd(config_path, ssh_key, server_ip, headlamp_domain):
         username=cfg['ssh_user'],
         use_sudo=(cfg['ssh_user'] != 'root'),
     )
-    ssh_module.start_curl_pod(ssh)
     try:
-        token = authentik_module.ensure_admin_token(
-            ssh, state.get('generated_secrets', {}).get('authentik_bootstrap_token'),
-        )
-        client_id, client_secret = authentik_module.configure_k3s_oidc(ssh, token, headlamp_domain=domain)
-        headlamp_module.install_headlamp(ssh, domain, authentik_cfg['domain'], client_id, client_secret)
-        headlamp_module.configure_oidc_rbac(
-            ssh,
-            authentik_cfg.get('groups', authentik_module.DEFAULT_GROUPS),
-            admin_group=authentik_cfg.get('admin_group', 'forgejo-admins'),
-        )
+        # The kubernetes provider (pinned client) and the headlamp redirect
+        # URI are declared in the platform blueprint; re-apply it so a
+        # headlamp_domain added after provisioning lands there too.
+        gen = secrets_module.generate(state)
+        authentik_module.apply_wiring_manifests(ssh, cfg, gen)
+        inputs = {
+            'k8s_client_id': authentik_module.OIDC_CLIENT_IDS['kubernetes'],
+            'k8s_client_secret': gen['k8s_oidc_client_secret'],
+        }
+        gitops_module.apply_apps(ssh, cfg, state, inputs, {'headlamp'})
+        gitops_module.wait_for_app(ssh, 'headlamp')
+        secrets_module.save_state(state)
     finally:
-        ssh_module.stop_curl_pod(ssh)
         ssh.close()
     click.echo(f"""
 Headlamp installed. Final step — add this DNS record so TLS can issue:
@@ -452,22 +428,14 @@ def install_analytics(config_path, ssh_key, server_ip, analytics_domain):
         use_sudo=(cfg['ssh_user'] != 'root'),
     )
     try:
-        analytics_module.install_umami(
-            ssh, domain, gen['umami_db_password'], gen['umami_app_secret'],
-        )
-        # Surface Umami on the Authentik dashboard as a bookmark tile. Umami OSS has
-        # no OIDC, so this is a launch link, not real SSO. Needs the curl pod + a live
-        # token (the stored bootstrap token may have expired on a long-lived server).
-        ssh_module.start_curl_pod(ssh)
-        try:
-            # Rotate the default admin/umami login off the public internet first.
-            analytics_module.set_admin_password(ssh, gen['umami_admin_password'])
-            token = authentik_module.ensure_admin_token(ssh, state.get('authentik_bootstrap_token'))
-            authentik_module.create_link_application(
-                ssh, token, name="Umami", slug="umami", launch_url=f"https://{domain}",
-            )
-        finally:
-            ssh_module.stop_curl_pod(ssh)
+        analytics_module.ensure_umami_database(ssh, gen['umami_db_password'])
+        gitops_module.apply_apps(ssh, cfg, state, {}, {'umami'})
+        gitops_module.wait_for_app(ssh, 'umami')
+        # Rotate the default admin/umami login off the public internet; the
+        # Authentik dashboard tile is declared in the platform blueprint
+        # (re-apply it so an analytics_domain added later lands there too).
+        analytics_module.apply_wiring(ssh, gen['umami_admin_password'])
+        authentik_module.apply_wiring_manifests(ssh, cfg, gen)
     finally:
         ssh.close()
     secrets_module.save_state(state)

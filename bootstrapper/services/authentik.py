@@ -50,16 +50,26 @@ def apply_wiring_manifests(ssh: paramiko.SSHClient, cfg: dict, gen: dict) -> Non
         "k3s kubectl create namespace authentik --dry-run=client -o yaml"
         " | k3s kubectl apply -f -",
     )
-    pinned = manifests.render(
-        'k8s/authentik-pinned-clients.yaml.j2',
-        admin_password=cfg['authentik']['admin_password'],
-        forgejo_oidc_client_secret=gen['forgejo_oidc_client_secret'],
-        argocd_oidc_client_secret=gen['argocd_oidc_client_secret'],
-        k8s_oidc_client_secret=gen['k8s_oidc_client_secret'],
-    )
     ssh_utils.run(ssh, f"mkdir -p {helm_module.DEPLOY_DIR}")
-    ssh_utils.upload(ssh, pinned, f"{helm_module.DEPLOY_DIR}/authentik-pinned-clients.yaml")
-    ssh_utils.run(ssh, f"k3s kubectl apply -f {helm_module.DEPLOY_DIR}/authentik-pinned-clients.yaml")
+    # The forgejo-wiring Job (forgejo namespace) reads the pinned Forgejo
+    # client secret too; Secrets are namespace-scoped, so apply a copy there.
+    for ns in ('authentik', 'forgejo'):
+        ssh_utils.run(
+            ssh,
+            f"k3s kubectl create namespace {ns} --dry-run=client -o yaml"
+            f" | k3s kubectl apply -f -",
+        )
+        pinned = manifests.render(
+            'k8s/authentik-pinned-clients.yaml.j2',
+            namespace=ns,
+            admin_password=cfg['authentik']['admin_password'],
+            forgejo_oidc_client_secret=gen['forgejo_oidc_client_secret'],
+            argocd_oidc_client_secret=gen['argocd_oidc_client_secret'],
+            k8s_oidc_client_secret=gen['k8s_oidc_client_secret'],
+        )
+        path = f"{helm_module.DEPLOY_DIR}/authentik-pinned-clients-{ns}.yaml"
+        ssh_utils.upload(ssh, pinned, path)
+        ssh_utils.run(ssh, f"k3s kubectl apply -f {path}")
     ssh_utils.upload(ssh, render_blueprint(cfg), f"{helm_module.DEPLOY_DIR}/authentik-blueprint.yaml")
     ssh_utils.run(ssh, f"k3s kubectl apply -f {helm_module.DEPLOY_DIR}/authentik-blueprint.yaml")
 

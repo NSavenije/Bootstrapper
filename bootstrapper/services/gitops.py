@@ -303,12 +303,27 @@ def build_files(cfg: dict, state: dict, inputs: dict, only: set | None = None) -
     if want('runner'):
         files['manifests/runner/runner.yaml'] = manifests.render(
             'k8s/runner.yaml.j2',
-            runner_token=state['runner_token'],
             forgejo_url=f"https://{forgejo_cfg['domain']}",
             forgejo_domain=forgejo_cfg['domain'],
             ci_runner_image=CI_RUNNER_IMAGE,
         )
         files['apps/runner.yaml'] = _manifest_app('runner', 'kube-system', repo_url)
+
+    if want('forgejo-wiring'):
+        files['manifests/forgejo-wiring/forgejo-wiring.yaml'] = manifests.render(
+            'k8s/forgejo-wiring-job.yaml.j2',
+            forgejo_domain=forgejo_cfg['domain'],
+            authentik_domain=authentik_cfg['domain'],
+            admin_group=authentik_cfg.get('admin_group', 'forgejo-admins'),
+        )
+        files['apps/forgejo-wiring.yaml'] = _manifest_app(
+            'forgejo-wiring', 'forgejo', repo_url)
+
+    if want('umami-wiring') and cfg.get('analytics_domain'):
+        files['manifests/umami-wiring/umami-wiring.yaml'] = manifests.render(
+            'k8s/umami-wiring-job.yaml.j2')
+        files['apps/umami-wiring.yaml'] = _manifest_app(
+            'umami-wiring', 'analytics', repo_url)
 
     if only is None:
         files['README.md'] = manifests.render(
