@@ -26,7 +26,7 @@ def generate(state: dict) -> dict:
     """
     generated = state.get('generated_secrets', {})
     for key in ('authentik_db_password', 'authentik_secret_key', 'authentik_bootstrap_token',
-                'umami_db_password', 'umami_app_secret'):
+                'umami_db_password', 'umami_app_secret', 'umami_admin_password'):
         if key not in generated:
             generated[key] = _secrets.token_urlsafe(32)
     state['generated_secrets'] = generated

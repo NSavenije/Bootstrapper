@@ -227,6 +227,9 @@ def provision(config_path, provider, forgejo_version, authentik_version, ssh_key
                 gen['umami_db_password'], gen['umami_app_secret'],
                 cluster_issuer=cluster_issuer,
             )
+            # Umami ships a default admin/umami login and has no OIDC to hide behind,
+            # so rotate it before the Ingress is reachable from the internet.
+            analytics_module.set_admin_password(ssh, gen['umami_admin_password'])
             # Umami OSS has no OIDC, so it can't be a real SSO app. Surface it on the
             # Authentik dashboard as a bookmark tile so it isn't invisible there.
             authentik_module.create_link_application(
@@ -256,7 +259,10 @@ def provision(config_path, provider, forgejo_version, authentik_version, ssh_key
     blog_line = f"\n  Blog:      https://{cfg['blog_domain']}" if cfg.get('blog_domain') else ""
     headlamp_line = f"\n  Headlamp:  https://{cfg['headlamp_domain']}" if cfg.get('headlamp_domain') else ""
     portal_line = f"\n  Portal:    https://{cfg['portal_domain']}  (-> Authentik dashboard)" if cfg.get('portal_domain') else ""
-    analytics_line = f"\n  Analytics: https://{cfg['analytics_domain']}  (Umami; login admin/umami — change it)" if cfg.get('analytics_domain') else ""
+    analytics_line = (
+        f"\n  Analytics: https://{cfg['analytics_domain']}  "
+        f"(Umami; login admin / {gen['umami_admin_password']})"
+    ) if cfg.get('analytics_domain') else ""
     blog_hosts = f"\n  {server_ip}  {cfg['blog_domain']}" if cfg.get('blog_domain') else ""
 
     if cfg['provider'] == 'local':
@@ -470,6 +476,8 @@ def install_analytics(config_path, ssh_key, server_ip, analytics_domain):
         # token (the stored bootstrap token may have expired on a long-lived server).
         ssh_module.start_curl_pod(ssh)
         try:
+            # Rotate the default admin/umami login off the public internet first.
+            analytics_module.set_admin_password(ssh, gen['umami_admin_password'])
             token = authentik_module.ensure_admin_token(ssh, state.get('authentik_bootstrap_token'))
             authentik_module.create_link_application(
                 ssh, token, name="Umami", slug="umami", launch_url=f"https://{domain}",
@@ -478,11 +486,15 @@ def install_analytics(config_path, ssh_key, server_ip, analytics_domain):
             ssh_module.stop_curl_pod(ssh)
     finally:
         ssh.close()
+    secrets_module.save_state(state)
     click.echo(f"""
 Umami installed. Add this DNS record so its TLS cert can issue:
   {domain}  ->  {target_ip}
 
-Then open https://{domain} and sign in with admin / umami (change the password).
+Then open https://{domain} and sign in with:
+  admin / {gen['umami_admin_password']}
+(also saved in {secrets_module.STATE_FILE})
+
 Add a website there for your blog, copy its tracking snippet into the site's
 <head>, and — being cookieless — you need no consent banner.
 """)

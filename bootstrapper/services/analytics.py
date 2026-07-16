@@ -13,6 +13,11 @@ DB_HOST = "authentik-postgresql.authentik.svc.cluster.local"
 DB_NAME = "umami"
 DB_USER = "umami"
 
+# Service port is 3000 (the chart does not put it behind :80 like Authentik).
+UMAMI_BASE = "http://umami.analytics.svc.cluster.local:3000"
+ADMIN_USER = "admin"
+DEFAULT_ADMIN_PASSWORD = "umami"
+
 
 def _ensure_umami_database(ssh: paramiko.SSHClient, db_password: str) -> None:
     """Create an isolated umami role + database inside the Authentik PostgreSQL.
@@ -76,3 +81,58 @@ def install_umami(
         timeout='5m',
     )
     click.echo("  Umami installed.")
+
+
+def _login(ssh: paramiko.SSHClient, password: str) -> str | None:
+    """Return an Umami API token for the admin user, or None if the password is wrong."""
+    r = ssh_utils.cluster_curl(
+        ssh, f"{UMAMI_BASE}/api/auth/login",
+        method='POST',
+        headers={"Content-Type": "application/json"},
+        json_body={"username": ADMIN_USER, "password": password},
+    )
+    if not r.ok:
+        return None
+    return r.json().get("token")
+
+
+def set_admin_password(ssh: paramiko.SSHClient, new_password: str) -> None:
+    """Replace Umami's default admin password with a generated one.
+
+    Umami seeds an `admin` user with the password `umami` on first start, and offers no
+    way to override it (no bootstrap env var, unlike Authentik). It also has no OIDC, so
+    it cannot hide behind Authentik the way the other services do — the login form is on
+    the public internet with a password that is in every copy of the docs. Left alone,
+    anyone can read and edit the analytics.
+
+    Idempotent, and safe to run against a server whose password was already rotated: it
+    tries the generated password first and returns if that works. Note this only knows
+    the default and the generated password, so if the password was changed by hand to a
+    third value, this raises rather than guessing.
+    """
+    if _login(ssh, new_password):
+        click.echo("  Umami admin password already set.")
+        return
+
+    token = _login(ssh, DEFAULT_ADMIN_PASSWORD)
+    if not token:
+        raise RuntimeError(
+            "Cannot log into Umami with either the generated or the default password. "
+            "If it was changed by hand, update generated_secrets.umami_admin_password "
+            "in .bootstrapper-state.yaml to match."
+        )
+
+    # v2 exposes the self-service route /api/me/password; there is no
+    # /api/users/{id}/password (that 404s).
+    r = ssh_utils.cluster_curl(
+        ssh, f"{UMAMI_BASE}/api/me/password",
+        method='POST',
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        json_body={"currentPassword": DEFAULT_ADMIN_PASSWORD, "newPassword": new_password},
+    )
+    if not r.ok:
+        raise RuntimeError(f"Failed to set Umami admin password ({r.status_code}): {r.text}")
+
+    if not _login(ssh, new_password):
+        raise RuntimeError("Umami accepted the password change but the new password does not work.")
+    click.echo("  Umami admin password rotated off the default.")
