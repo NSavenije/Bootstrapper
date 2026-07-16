@@ -1,9 +1,29 @@
 import shlex
+import time
 
 import click
 import paramiko
 
 from bootstrapper.deploy import ssh as ssh_utils
+
+
+def _wait_for_discovery(ssh: paramiko.SSHClient, url: str, timeout: int = 180) -> None:
+    """Poll the OIDC discovery URL until it answers 200.
+
+    Forgejo validates the URL when the auth source is written, so a
+    still-restarting Authentik (e.g. right after wire-k3s-oidc's k3s restart)
+    fails the whole command with a 503. Poll from the host with the same
+    reachability the Forgejo pod has.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        code = ssh_utils.run(
+            ssh, f"curl -sk -o /dev/null -w '%{{http_code}}' {shlex.quote(url)} || true",
+        ).strip()
+        if code == "200":
+            return
+        time.sleep(5)
+    raise TimeoutError(f"OIDC discovery URL not ready within {timeout}s: {url}")
 
 
 def configure_forgejo_oauth_source(
@@ -28,6 +48,8 @@ def configure_forgejo_oauth_source(
         discover_url = f"https://{authentik_domain}/application/o/forgejo/.well-known/openid-configuration"
     else:
         discover_url = "http://authentik-server.authentik.svc.cluster.local/application/o/forgejo/.well-known/openid-configuration"
+
+    _wait_for_discovery(ssh, discover_url)
 
     oauth_flags = (
         f" --provider openidConnect"
