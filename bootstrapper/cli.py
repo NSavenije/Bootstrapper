@@ -17,6 +17,7 @@ from bootstrapper.deploy import ssh as ssh_module
 from bootstrapper.services import analytics as analytics_module
 from bootstrapper.services import argocd as argocd_module
 from bootstrapper.services import authentik as authentik_module
+from bootstrapper.services import backup as backup_module
 from bootstrapper.services import forgejo as forgejo_module
 from bootstrapper.services import gitops as gitops_module
 from bootstrapper.services import k8s as k8s_module
@@ -103,6 +104,10 @@ def provision(config_path, provider, forgejo_version, authentik_version, ssh_key
     # The blueprint ConfigMap + pinned-clients Secret must exist before the
     # authentik Application deploys (the worker mounts/reads them).
     authentik_module.apply_wiring_manifests(ssh, cfg, gen)
+    if cfg.get('github_mirror_token'):
+        backup_module.apply_credentials(
+            ssh, cfg['github_mirror_token'], gen['backup_encryption_key'],
+        )
 
     # Chart-based Applications are self-contained (registry + inline values),
     # so they can be applied before Forgejo — and thus the gitops repo — exists.
@@ -201,12 +206,21 @@ def provision(config_path, provider, forgejo_version, authentik_version, ssh_key
         # (cluster-issuer, headlamp-rbac, portal-redirect, runner) sync from it.
         gitops_module.seed_gitops(ssh, cfg, state)
         for app_name in ('cluster-issuer', 'authentik-blueprint', 'headlamp-rbac',
-                         'portal-redirect', 'runner', 'forgejo-wiring', 'umami-wiring'):
+                         'portal-redirect', 'runner', 'forgejo-wiring', 'umami-wiring',
+                         'github-mirror', 'db-backup'):
             if app_name == 'portal-redirect' and not cfg.get('portal_domain'):
                 continue
             if app_name == 'umami-wiring' and not cfg.get('analytics_domain'):
                 continue
+            if app_name in ('github-mirror', 'db-backup') and not cfg.get('github_mirror_token'):
+                continue
             gitops_module.wait_for_app(ssh, app_name)
+
+        if cfg.get('github_mirror_token'):
+            # Run both backup CronJobs once now: mirrors register immediately
+            # (sync_on_commit takes over) and the first encrypted dump lands.
+            backup_module.kickoff(ssh, 'github-mirror', 'forgejo')
+            backup_module.kickoff(ssh, 'db-backup', 'authentik')
 
     finally:
         ssh_module.stop_curl_pod(ssh)

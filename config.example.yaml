@@ -42,6 +42,11 @@ argocd_domain: "argocd.yourdomain.nl"   # required; Argo CD web UI
 # portal_domain: "portal.yourdomain.nl"      # optional; friendly redirect to the Authentik app dashboard
 # analytics_domain: "stats.yourdomain.nl"    # optional; Umami cookieless analytics (no consent banner)
 
+# Optional backups: every Forgejo repo gets a private GitHub push-mirror
+# (synced on commit) and the platform databases get nightly encrypted dumps
+# to a private GitHub repo. Token needs the `repo` scope.
+# github_mirror_token: "ghp_..."
+
 
 # ─────────────────────────────────────────────
 # OPTION B: Local (WSL2)

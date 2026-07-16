@@ -325,6 +325,18 @@ def build_files(cfg: dict, state: dict, inputs: dict, only: set | None = None) -
         files['apps/umami-wiring.yaml'] = _manifest_app(
             'umami-wiring', 'analytics', repo_url)
 
+    if want('github-mirror') and cfg.get('github_mirror_token'):
+        files['manifests/github-mirror/github-mirror.yaml'] = manifests.render(
+            'k8s/github-mirror-cronjob.yaml.j2')
+        files['apps/github-mirror.yaml'] = _manifest_app(
+            'github-mirror', 'forgejo', repo_url)
+
+    if want('db-backup') and cfg.get('github_mirror_token'):
+        files['manifests/db-backup/db-backup.yaml'] = manifests.render(
+            'k8s/db-backup-cronjob.yaml.j2')
+        files['apps/db-backup.yaml'] = _manifest_app(
+            'db-backup', 'authentik', repo_url)
+
     if only is None:
         files['README.md'] = manifests.render(
             'gitops/README.md.j2',

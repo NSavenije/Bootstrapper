@@ -31,7 +31,10 @@ def generate(state: dict) -> dict:
                 # Authentik providers by blueprint, and read by every consumer
                 # (Forgejo source, Argo CD, Headlamp) — no cross-service reads.
                 'forgejo_oidc_client_secret', 'argocd_oidc_client_secret',
-                'k8s_oidc_client_secret'):
+                'k8s_oidc_client_secret',
+                # Encrypts DB dumps before they leave the cluster; losing it
+                # makes every backup unreadable — back up the state file.
+                'backup_encryption_key'):
         if key not in generated:
             generated[key] = _secrets.token_urlsafe(32)
     state['generated_secrets'] = generated
