@@ -18,18 +18,42 @@ _BASE = "http://forgejo-http.forgejo.svc.cluster.local:3000"
 CI_RUNNER_IMAGE = "platform-ci:latest"
 
 
+def _forgejo_image_exists(tag: str) -> bool:
+    """Check that the rootless container image for a release tag is actually
+    published on code.forgejo.org — releases can precede their images."""
+    registry = 'https://code.forgejo.org'
+    token = requests.get(
+        f'{registry}/v2/token?scope=repository:forgejo/forgejo:pull', timeout=10,
+    ).json().get('token', '')
+    r = requests.head(
+        f'{registry}/v2/forgejo/forgejo/manifests/{tag}-rootless',
+        headers={
+            'Authorization': f'Bearer {token}',
+            'Accept': 'application/vnd.oci.image.index.v1+json, '
+                      'application/vnd.docker.distribution.manifest.list.v2+json, '
+                      'application/vnd.docker.distribution.manifest.v2+json',
+        },
+        timeout=10,
+    )
+    return r.status_code == 200
+
+
 def resolve_forgejo_version(version: str) -> str:
-    """Resolve 'latest' to the actual latest Forgejo release tag via Codeberg API."""
+    """Resolve 'latest' to the newest Forgejo release whose image is published."""
     if version != 'latest':
         return version
     r = requests.get(
-        'https://codeberg.org/api/v1/repos/forgejo/forgejo/releases?limit=1&pre-release=false',
+        'https://codeberg.org/api/v1/repos/forgejo/forgejo/releases?limit=5&pre-release=false',
         timeout=10,
     )
     r.raise_for_status()
-    tag = r.json()[0]['tag_name'].lstrip('v')  # e.g. "14.0.2"
-    click.echo(f"  Resolved Forgejo 'latest' -> {tag}")
-    return tag
+    for release in r.json():
+        tag = release['tag_name'].lstrip('v')  # e.g. "14.0.2"
+        if _forgejo_image_exists(tag):
+            click.echo(f"  Resolved Forgejo 'latest' -> {tag}")
+            return tag
+        click.echo(f"  Skipping Forgejo {tag}: release exists but image not published yet.")
+    raise RuntimeError("No recent Forgejo release has a published container image.")
 
 
 def install_forgejo(
