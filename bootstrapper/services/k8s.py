@@ -124,6 +124,12 @@ _TLS_SECRETS = [
     ("forgejo", "forgejo-tls"),
     ("authentik", "authentik-tls"),
     ("argocd", "argocd-server-tls"),
+    # Every issued cert must survive rebuilds — Let's Encrypt allows only 5
+    # duplicate certificates per exact name per week, and repeated dev-box
+    # rebuilds burn through that fast for any name missing from this list.
+    ("headlamp", "headlamp-tls"),
+    ("authentik", "portal-tls"),
+    ("analytics", "umami-tls"),
 ]
 
 
