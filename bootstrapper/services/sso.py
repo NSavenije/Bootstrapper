@@ -96,6 +96,12 @@ def configure_forgejo_oauth_source(
             inner_cmd.encode(),
         )
         click.echo(f"  Updated existing 'authentik' auth source (id={existing_id}).")
+        # The CLI writes the DB behind the running server's provider registry;
+        # unlike an add, an update (e.g. new client_id/secret) is not picked up
+        # until restart — Forgejo would keep sending the old client_id.
+        click.echo("  Restarting Forgejo to reload the updated auth source...")
+        ssh_utils.run(ssh, "k3s kubectl rollout restart deploy/forgejo -n forgejo")
+        ssh_utils.run(ssh, "k3s kubectl rollout status deploy/forgejo -n forgejo --timeout=180s")
     else:
         inner_cmd = "forgejo admin auth add-oauth --name authentik" + oauth_flags + "\n"
         ssh_utils.run_with_stdin(
