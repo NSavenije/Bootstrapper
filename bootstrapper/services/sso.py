@@ -1,3 +1,4 @@
+import re
 import shlex
 import time
 
@@ -12,18 +13,27 @@ def _wait_for_discovery(ssh: paramiko.SSHClient, url: str, timeout: int = 180) -
 
     Forgejo validates the URL when the auth source is written, so a
     still-restarting Authentik (e.g. right after wire-k3s-oidc's k3s restart)
-    fails the whole command with a 503. Poll from the host with the same
-    reachability the Forgejo pod has.
+    fails the whole command with a 503. The poll runs curl on the host, which
+    cannot resolve cluster DNS — for .svc.cluster.local URLs, probe the
+    service's ClusterIP instead (routable from the k3s node).
     """
+    probe = url
+    m = re.match(r'(https?)://([a-z0-9-]+)\.([a-z0-9-]+)\.svc\.cluster\.local(/.*)', url)
+    if m:
+        scheme, svc, ns, path = m.groups()
+        cluster_ip = ssh_utils.run(
+            ssh, f"k3s kubectl get svc -n {ns} {svc} -o jsonpath='{{.spec.clusterIP}}'",
+        ).strip()
+        probe = f"{scheme}://{cluster_ip}{path}"
     deadline = time.time() + timeout
     while time.time() < deadline:
         code = ssh_utils.run(
-            ssh, f"curl -sk -o /dev/null -w '%{{http_code}}' {shlex.quote(url)} || true",
+            ssh, f"curl -sk -o /dev/null -w '%{{http_code}}' {shlex.quote(probe)} || true",
         ).strip()
         if code == "200":
             return
         time.sleep(5)
-    raise TimeoutError(f"OIDC discovery URL not ready within {timeout}s: {url}")
+    raise TimeoutError(f"OIDC discovery URL not ready within {timeout}s: {probe}")
 
 
 def configure_forgejo_oauth_source(
