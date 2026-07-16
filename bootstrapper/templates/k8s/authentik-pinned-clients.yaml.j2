@@ -1,0 +1,17 @@
+# Pinned SSO credentials (Layer 1 — applied by the CLI, never stored in git).
+#
+# The single source the whole platform reads: the Authentik blueprint sets
+# these values on its providers via !Env, and Forgejo's OAuth source, Argo
+# CD's oidc config, Headlamp's values and the kube-apiserver all reference
+# the same known values. No service ever reads a generated secret out of
+# another service (design doc §4.1).
+apiVersion: v1
+kind: Secret
+metadata:
+  name: authentik-pinned-clients
+  namespace: authentik
+stringData:
+  AK_ADMIN_PASSWORD: {{ admin_password }}
+  FORGEJO_OIDC_CLIENT_SECRET: {{ forgejo_oidc_client_secret }}
+  ARGOCD_OIDC_CLIENT_SECRET: {{ argocd_oidc_client_secret }}
+  K8S_OIDC_CLIENT_SECRET: {{ k8s_oidc_client_secret }}

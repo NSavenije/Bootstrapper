@@ -26,7 +26,12 @@ def generate(state: dict) -> dict:
     """
     generated = state.get('generated_secrets', {})
     for key in ('authentik_db_password', 'authentik_secret_key', 'authentik_bootstrap_token',
-                'umami_db_password', 'umami_app_secret', 'umami_admin_password'):
+                'umami_db_password', 'umami_app_secret', 'umami_admin_password',
+                # Pinned OIDC client secrets: generated once here, set on the
+                # Authentik providers by blueprint, and read by every consumer
+                # (Forgejo source, Argo CD, Headlamp) — no cross-service reads.
+                'forgejo_oidc_client_secret', 'argocd_oidc_client_secret',
+                'k8s_oidc_client_secret'):
         if key not in generated:
             generated[key] = _secrets.token_urlsafe(32)
     state['generated_secrets'] = generated

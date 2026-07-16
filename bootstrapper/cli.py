@@ -102,6 +102,10 @@ def provision(config_path, provider, forgejo_version, authentik_version, ssh_key
     argocd_module.install_argocd(ssh, cfg['argocd_domain'], cluster_issuer=cluster_issuer)
     gitops_module.apply_oci_repo_secret(ssh)
 
+    # The blueprint ConfigMap + pinned-clients Secret must exist before the
+    # authentik Application deploys (the worker mounts/reads them).
+    authentik_module.apply_wiring_manifests(ssh, cfg, gen)
+
     # Chart-based Applications are self-contained (registry + inline values),
     # so they can be applied before Forgejo — and thus the gitops repo — exists.
     # Render inputs are filled in as the wiring steps below produce them.
@@ -140,24 +144,14 @@ def provision(config_path, provider, forgejo_version, authentik_version, ssh_key
             state['runner_token'] = runner_token
             secrets_module.save_state(state)
 
-        authentik_module.wait_for_authentik(ssh, gen['authentik_bootstrap_token'])
-        authentik_module.sync_akadmin(
-            ssh,
-            gen['authentik_bootstrap_token'],
-            authentik_cfg['admin_password'],
-            authentik_cfg['email'],
+        # Authentik wiring is declared in the platform blueprint (groups,
+        # providers with pinned client_id/client_secret, mappings, tiles,
+        # akadmin) — wait for the worker to have applied it, no API writes.
+        authentik_module.wait_for_blueprint(
+            ssh, list(authentik_module.OIDC_CLIENT_IDS), timeout=600,
         )
-        client_id, client_secret = authentik_module.configure_oauth_provider(
-            ssh,
-            gen['authentik_bootstrap_token'],
-            forgejo_cfg['domain'],
-        )
-        click.echo("  Creating Authentik groups...")
-        authentik_module.create_groups(
-            ssh,
-            gen['authentik_bootstrap_token'],
-            authentik_cfg.get('groups', authentik_module.DEFAULT_GROUPS),
-        )
+        client_id = authentik_module.OIDC_CLIENT_IDS['forgejo']
+        client_secret = gen['forgejo_oidc_client_secret']
 
         click.echo("\n  Configuring SSO (Authentik -> Forgejo)...")
         sso_module.configure_forgejo_oauth_source(
@@ -176,10 +170,8 @@ def provision(config_path, provider, forgejo_version, authentik_version, ssh_key
 
         # --- Step 5: SSO wiring + remaining Applications ---
         click.echo("\n[5/6] Wiring k3s/Argo CD SSO and applying remaining Applications...")
-        k8s_client_id, k8s_client_secret = authentik_module.configure_k3s_oidc(
-            ssh, gen['authentik_bootstrap_token'],
-            headlamp_domain=cfg.get('headlamp_domain'),
-        )
+        k8s_client_id = authentik_module.OIDC_CLIENT_IDS['kubernetes']
+        k8s_client_secret = gen['k8s_oidc_client_secret']
         state['k8s_client_id'] = k8s_client_id
         state['k8s_client_secret'] = k8s_client_secret
         secrets_module.save_state(state)
@@ -189,14 +181,16 @@ def provision(config_path, provider, forgejo_version, authentik_version, ssh_key
             gitops_module.apply_apps(ssh, cfg, state, inputs, {'headlamp'})
             gitops_module.wait_for_app(ssh, 'headlamp')
 
-        argocd_client_id, _ = argocd_module.configure_argocd_sso(
+        argocd_client_id = authentik_module.OIDC_CLIENT_IDS['argocd']
+        argocd_module.configure_argocd_sso(
             ssh,
-            gen['authentik_bootstrap_token'],
             authentik_cfg['domain'],
             cfg['argocd_domain'],
             forgejo_cfg['domain'],
             forgejo_cfg['admin_username'],
             forgejo_api_token,
+            oidc_client_id=argocd_client_id,
+            oidc_client_secret=gen['argocd_oidc_client_secret'],
         )
         state['argocd_client_id'] = argocd_client_id
         secrets_module.save_state(state)
@@ -216,14 +210,8 @@ def provision(config_path, provider, forgejo_version, authentik_version, ssh_key
             gitops_module.wait_for_app(ssh, 'umami')
             # Umami ships a default admin/umami login and has no OIDC to hide behind,
             # so rotate it before the Ingress is reachable from the internet.
+            # (Its Authentik dashboard tile is declared in the platform blueprint.)
             analytics_module.set_admin_password(ssh, gen['umami_admin_password'])
-            # Umami OSS has no OIDC, so it can't be a real SSO app. Surface it on the
-            # Authentik dashboard as a bookmark tile so it isn't invisible there.
-            authentik_module.create_link_application(
-                ssh, gen['authentik_bootstrap_token'],
-                name="Umami", slug="umami",
-                launch_url=f"https://{cfg['analytics_domain']}",
-            )
 
         # --- Step 6: Seed the platform-config and platform-gitops repositories ---
         click.echo("\n[6/6] Seeding platform-config and platform-gitops repositories...")
@@ -233,7 +221,8 @@ def provision(config_path, provider, forgejo_version, authentik_version, ssh_key
         # becomes the source of truth, and the remaining manifest apps
         # (cluster-issuer, headlamp-rbac, portal-redirect, runner) sync from it.
         gitops_module.seed_gitops(ssh, cfg, state)
-        for app_name in ('cluster-issuer', 'headlamp-rbac', 'portal-redirect', 'runner'):
+        for app_name in ('cluster-issuer', 'authentik-blueprint', 'headlamp-rbac',
+                         'portal-redirect', 'runner'):
             if app_name == 'portal-redirect' and not cfg.get('portal_domain'):
                 continue
             gitops_module.wait_for_app(ssh, app_name)

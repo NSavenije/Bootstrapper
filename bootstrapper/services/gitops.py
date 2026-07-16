@@ -22,6 +22,7 @@ from bootstrapper.deploy import manifests
 from bootstrapper.deploy import ssh as ssh_utils
 from bootstrapper.deploy.helm import DEPLOY_DIR
 from bootstrapper.services import analytics as analytics_module
+from bootstrapper.services import authentik as authentik_module
 from bootstrapper.services.forgejo import CI_RUNNER_IMAGE
 from bootstrapper.services.headlamp import _role_for
 
@@ -84,11 +85,22 @@ def resolve_inputs(ssh: paramiko.SSHClient, cfg: dict, state: dict) -> dict:
     Inputs that exist nowhere yet (mid-provision) resolve to None; apps that
     need them are simply not rendered until they are available.
     """
+    gen = state.get('generated_secrets', {})
     inputs = {}
 
     inputs["forgejo_version"] = state.get("forgejo_version") or (
         _remote_yaml(ssh, f"{DEPLOY_DIR}/helm-values-forgejo.yaml")["image"]["tag"]
     )
+    # Pinned OIDC clients (Phase 3+): ids are constants, secrets are generated
+    # once into state and set on the Authentik providers by blueprint.
+    if 'k8s_oidc_client_secret' in gen:
+        inputs["k8s_client_id"] = authentik_module.OIDC_CLIENT_IDS['kubernetes']
+        inputs["k8s_client_secret"] = gen['k8s_oidc_client_secret']
+        inputs["argocd_client_id"] = authentik_module.OIDC_CLIENT_IDS['argocd']
+        return inputs
+
+    # Pre-blueprint boxes: fall back to state, then to the values files the
+    # old provision flow uploaded to /opt/bootstrapper.
     inputs["k8s_client_id"] = state.get("k8s_client_id")
     inputs["k8s_client_secret"] = state.get("k8s_client_secret")
     if cfg.get("headlamp_domain") and not inputs["k8s_client_secret"]:
@@ -258,6 +270,12 @@ def build_files(cfg: dict, state: dict, inputs: dict, only: set | None = None) -
         )
         files['apps/cluster-issuer.yaml'] = _manifest_app(
             'cluster-issuer', 'cert-manager', repo_url)
+
+    if want('authentik-blueprint'):
+        files['manifests/authentik-blueprint/blueprint.yaml'] = (
+            authentik_module.render_blueprint(cfg))
+        files['apps/authentik-blueprint.yaml'] = _manifest_app(
+            'authentik-blueprint', 'authentik', repo_url)
 
     if want('headlamp-rbac'):
         groups = authentik_cfg.get('groups', [])

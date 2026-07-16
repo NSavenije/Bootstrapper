@@ -6,7 +6,6 @@ from bootstrapper.deploy import helm as helm_module
 from bootstrapper.deploy import manifests
 from bootstrapper.deploy import ssh as ssh_utils
 from bootstrapper.deploy.helm import DEPLOY_DIR
-from bootstrapper.services import authentik as authentik_module
 
 
 def install_argocd(
@@ -33,34 +32,26 @@ def install_argocd(
 
 def configure_argocd_sso(
     client: paramiko.SSHClient,
-    bootstrap_token: str,
     authentik_domain: str,
     argocd_domain: str,
     forgejo_domain: str,
     forgejo_admin_username: str,
     forgejo_api_token: str,
-) -> tuple[str, str]:
-    """Configure Argo CD SSO via Authentik OIDC. Returns (client_id, client_secret).
+    oidc_client_id: str,
+    oidc_client_secret: str,
+) -> None:
+    """Wire Argo CD to the blueprint-declared Authentik provider.
 
-    Creates an Authentik OAuth2 provider + application for Argo CD, then
-    patches argocd-cm with the OIDC config and argocd-rbac-cm with the
-    initial team RBAC policy. Also seeds the platform-forgejo-token and
-    forgejo-repo-creds Secrets.
+    The provider itself (pinned client_id/client_secret, redirect URI, launch
+    URL) is declared in the Authentik platform blueprint; this only writes the
+    Argo CD side: argocd-cm OIDC config, the initial RBAC policy, and the
+    platform-forgejo-token / forgejo-repo-creds Secrets.
     """
     click.echo("  Configuring Argo CD SSO with Authentik...")
-    client_id, client_secret = authentik_module.create_oauth_provider(
-        client, bootstrap_token,
-        name="argocd", slug="argocd", app_name="Argo CD",
-        redirect_uris=[{"matching_mode": "strict", "url": f"https://{argocd_domain}/auth/callback"}],
-        # Argo CD has no direct OIDC-initiation deep link; its login page shows a
-        # "Log in via Authentik" button. Land the user there rather than nowhere.
-        launch_url=f"https://{argocd_domain}/auth/login",
-    )
-    _apply_argocd_sso_secrets(client, client_secret, forgejo_domain, forgejo_admin_username, forgejo_api_token)
-    _patch_argocd_cm(client, authentik_domain, argocd_domain, client_id)
+    _apply_argocd_sso_secrets(client, oidc_client_secret, forgejo_domain, forgejo_admin_username, forgejo_api_token)
+    _patch_argocd_cm(client, authentik_domain, argocd_domain, oidc_client_id)
     _patch_argocd_rbac_cm(client)
     click.echo("  Argo CD SSO configured.")
-    return client_id, client_secret
 
 
 def _apply_argocd_sso_secrets(
