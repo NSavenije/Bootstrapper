@@ -58,6 +58,30 @@ def _wait_for_k3s(client: paramiko.SSHClient, timeout: int = 300, interval: int 
     raise TimeoutError(f"k3s node did not become Ready within {timeout}s")
 
 
+def _wait_for_k3s_stable(
+    client: paramiko.SSHClient, timeout: int = 300, interval: int = 5, stable_checks: int = 6,
+) -> None:
+    """Wait until the apiserver answers /readyz repeatedly in a row.
+
+    After k3s-killall.sh + systemctl start, k3s can come up, exit once, and be
+    auto-restarted by systemd ~20s later. Node status also reads stale-Ready in
+    that window, so a single successful poll is not proof of stability; require
+    several consecutive OKs before letting callers exec into pods.
+    """
+    deadline = time.time() + timeout
+    consecutive = 0
+    while time.time() < deadline:
+        try:
+            out = ssh_utils.run(client, "k3s kubectl get --raw /readyz 2>/dev/null")
+            consecutive = consecutive + 1 if out.strip() == 'ok' else 0
+        except RuntimeError:
+            consecutive = 0
+        if consecutive >= stable_checks:
+            return
+        time.sleep(interval)
+    raise TimeoutError(f"k3s apiserver did not stay ready within {timeout}s")
+
+
 def wire_oidc(client: paramiko.SSHClient, authentik_domain: str) -> None:
     """Append OIDC flags to k3s config and restart k3s (idempotent).
 
@@ -88,7 +112,7 @@ def wire_oidc(client: paramiko.SSHClient, authentik_domain: str) -> None:
     click.echo("  Restarting k3s...")
     ssh_utils.run(client, "/usr/local/bin/k3s-killall.sh && systemctl start k3s")
     click.echo("  Waiting for k3s to become ready...")
-    _wait_for_k3s(client)
+    _wait_for_k3s_stable(client)
     # k3s-killall.sh tears down every pod; the API server returns before workloads
     # are back. Wait for Forgejo specifically, since the caller exec's into it next.
     click.echo("  Waiting for Forgejo to restart...")
