@@ -267,15 +267,18 @@ Bootstrapper is a **day-0** tool: it runs once and hands you a live platform. Ev
 
 ### Backups
 
-The platform runs on a **single VPS with a single disk**. Treat that as the primary risk. The current strategy is *managed off-box mirroring* — let a provider hold the durable copy until self-hosted backups are worth the effort:
+The platform runs on a **single VPS with a single disk**. Treat that as the primary risk. The strategy is *managed off-box mirroring* — let a provider hold the durable copy until self-hosted backups are worth the effort. Setting the optional `github_mirror_token` config field (a GitHub token with `repo` scope) enables both automated backups:
 
-- **Git repositories → GitHub push-mirror.** Configure each Forgejo repo (or the whole platform) to push-mirror to a private GitHub repo. This is the first backup to set up: it moves the most valuable, hardest-to-recreate data (source, history, platform-config, tenant manifests) onto infrastructure someone else keeps alive.
+- **Git repositories → GitHub push-mirrors.** A nightly CronJob (`github-mirror`, forgejo namespace) discovers every Forgejo repo, creates a **private** GitHub repo for it (`forgejo-<owner>-<name>`), and registers a push-mirror with `sync_on_commit` — after the first sync, every push is mirrored within seconds. New repos are picked up within a day.
+- **Databases → encrypted nightly dumps.** A CronJob (`db-backup`, authentik namespace) runs `pg_dump` for the Authentik and Umami databases, gzips and **AES-256-encrypts each dump before it leaves the cluster**, and uploads to a private `platform-db-backups` GitHub repo. The encryption key is generated into the state file; the restore command is documented in the CronJob manifest.
 
-Not yet automated — **known gaps**, in priority order:
+Remaining **known gaps**, in priority order:
 
-1. **Databases** — Authentik's PostgreSQL (which also holds Umami) has no scheduled dump. A disk failure loses all identities, SSO config, and analytics. `pg_dump` to off-box storage is the next thing to add.
+1. **State file** — `.bootstrapper-state.yaml` holds every generated secret **including the backup encryption key** (losing it makes the DB dumps unreadable). Keep an encrypted off-machine copy; it is deliberately not automated, since any automated destination would need credentials stored… in the state file.
 2. **Container registry** — images in Forgejo's registry are rebuildable from CI, but only if the git repos survive (hence mirroring first).
-3. **State file** — `.bootstrapper-state.yaml` holds every generated secret. Keep an encrypted off-machine copy.
+3. **Backup retention** — mirrors track their source (a force-push propagates); dump artifacts accumulate without pruning. Both are acceptable at this scale, neither is a versioned archive.
+
+> Backups you have never restored are hopes, not backups. The dump path is restore-tested (download → decrypt → `psql` into a scratch database); repeat that drill after significant Authentik upgrades.
 
 ### Upgrades
 
@@ -296,10 +299,10 @@ The day-2 story improves structurally when the platform's own desired state beco
 The platform is designed to be reconstructible, not precious.
 
 - **Rebuild on a fresh box:** delete the old server, remove `.bootstrapper-state.yaml`, point DNS at the new IP, and re-run `provision`. Saved TLS certificates (persisted in the state file) let cert-manager skip ACME re-issuance for domains it has seen, so a rebuild does not burn Let's Encrypt rate limits.
-- **Move to another provider or region:** the whole stack is portable — it assumes only "a Linux box reachable over SSH." Restore git repos from the GitHub mirror, restore databases from `pg_dump` (once that backup exists), re-run `provision`.
+- **Move to another provider or region:** the whole stack is portable — it assumes only "a Linux box reachable over SSH." Restore git repos from the GitHub mirrors, restore databases from the encrypted dumps, re-run `provision`.
 - **Clean SSH host keys** between rebuilds that reuse a hostname: `ssh-keygen -R <ip>` and `ssh-keygen -R "[git.yourdomain.nl]:2222"`.
 
-> Full disaster recovery is **not yet one command** — it depends on the database and state backups called out above. Until those exist, a total-loss rebuild recovers code (from the mirror) but not identities or analytics.
+> Full disaster recovery is **not yet one command** — restoring mirrors and database dumps into a fresh platform is a documented-but-manual sequence (see `docs/prod-cutover-runbook.md` once written). A total-loss rebuild recovers code and databases as long as the state file survived with you.
 
 ## Project structure
 
