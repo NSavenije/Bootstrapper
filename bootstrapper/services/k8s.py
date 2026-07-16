@@ -180,6 +180,30 @@ def restore_tls_secrets(client: paramiko.SSHClient, saved: dict) -> None:
         click.echo(f"    {name} ({ns}) restored.")
 
 
+def apply_cluster_issuer(client: paramiko.SSHClient, provider: str, email: str) -> str:
+    """Apply the ClusterIssuer manifest directly; cert-manager must be running.
+
+    Used by the Argo-CD-era provision flow, where cert-manager itself is
+    deployed by an Application: the issuer needs the CRDs + webhook first, so
+    it is applied right after the cert-manager app reports Healthy. The same
+    manifest is also owned by the cluster-issuer Application once the gitops
+    repo is seeded (identical content — adoption is a no-op).
+    """
+    if provider == 'local':
+        issuer_name = 'selfsigned'
+        rendered = manifests.render('k8s/selfsigned-issuer.yaml.j2')
+    else:
+        issuer_name = 'letsencrypt-prod'
+        rendered = manifests.render('k8s/cluster-issuer.yaml.j2',
+                                    issuer_name=issuer_name, email=email)
+    path = f"{DEPLOY_DIR}/cluster-issuer.yaml"
+    ssh_utils.run(client, f"mkdir -p {DEPLOY_DIR}")
+    ssh_utils.upload(client, rendered, path)
+    ssh_utils.run(client, f"k3s kubectl apply -f {path}")
+    click.echo(f"  ClusterIssuer {issuer_name} applied.")
+    return issuer_name
+
+
 def install_cert_manager_selfsigned(client: paramiko.SSHClient) -> str:
     """Install cert-manager with a self-signed ClusterIssuer for local/offline use.
 

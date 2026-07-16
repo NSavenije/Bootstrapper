@@ -1,7 +1,6 @@
-# Argo CD Application wrapping a Helm release the bootstrapper installed.
-# Values are rendered from the same templates the CLI uses, so Argo CD's
-# desired state is byte-identical to what `helm upgrade --install` produced —
-# adoption is a no-op diff. No automated sync in Phase 1 (adoption only).
+# Argo CD Application wrapping a Helm release the bootstrapper used to install.
+# Values are rendered from the same templates the CLI uses, so what Argo CD
+# deploys is byte-identical to what `helm upgrade --install` produced.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -23,6 +22,11 @@ spec:
     server: https://kubernetes.default.svc
     namespace: {{ namespace }}
   syncPolicy:
+{% if automated | default(true) %}
+    automated:
+      prune: {{ 'true' if prune | default(true) else 'false' }}
+      selfHeal: true
+{% endif %}
     syncOptions:
       - CreateNamespace=true
 {% for opt in extra_sync_options | default([]) %}

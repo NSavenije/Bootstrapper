@@ -19,7 +19,7 @@ ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASSWORD = "umami"
 
 
-def _ensure_umami_database(ssh: paramiko.SSHClient, db_password: str) -> None:
+def ensure_umami_database(ssh: paramiko.SSHClient, db_password: str) -> None:
     """Create an isolated umami role + database inside the Authentik PostgreSQL.
 
     Idempotent: the role is created only if missing (its password is always synced),
@@ -62,7 +62,7 @@ def install_umami(
     cluster_issuer: str = "letsencrypt-prod",
 ) -> None:
     """Install Umami via Helm (external DB), Traefik Ingress and cert-manager TLS."""
-    _ensure_umami_database(ssh, db_password)
+    ensure_umami_database(ssh, db_password)
 
     click.echo("  Installing Umami via Helm...")
     helm_module.add_repo(ssh, "christianhuth", UMAMI_REPO)

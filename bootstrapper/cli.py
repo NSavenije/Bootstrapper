@@ -89,36 +89,28 @@ def provision(config_path, provider, forgejo_version, authentik_version, ssh_key
     docker_module.install_docker(ssh)
     k8s_module.install_k3s(ssh)
 
-    # --- Step 3: Install platform services via Helm ---
-    click.echo("\n[3/6] Installing Helm, cert-manager, Forgejo and Authentik...")
+    # --- Step 3: Install Helm + Argo CD, then let Argo CD deploy the platform ---
+    click.echo("\n[3/6] Installing Helm and Argo CD; applying platform Applications...")
     forgejo_version = forgejo_module.resolve_forgejo_version(cfg['forgejo_version'])
     state['forgejo_version'] = forgejo_version
     secrets_module.save_state(state)
     helm_module.install_helm(ssh)
     k8s_module.restore_tls_secrets(ssh, state.get('tls_secrets', {}))
-    if cfg['provider'] == 'local':
-        cluster_issuer = k8s_module.install_cert_manager_selfsigned(ssh)
-    else:
-        cluster_issuer = k8s_module.install_cert_manager(ssh, authentik_cfg['email'])
-    forgejo_module.install_forgejo(
-        ssh,
-        forgejo_cfg['domain'],
-        forgejo_cfg['admin_username'],
-        forgejo_cfg['admin_password'],
-        forgejo_cfg['email'],
-        forgejo_version,
-        cluster_issuer=cluster_issuer,
-    )
-    authentik_module.install_authentik(
-        ssh,
-        authentik_cfg['domain'],
-        gen['authentik_secret_key'],
-        gen['authentik_bootstrap_token'],
-        authentik_cfg['admin_password'],
-        authentik_cfg['email'],
-        gen['authentik_db_password'],
-        cluster_issuer=cluster_issuer,
-    )
+    cluster_issuer = 'selfsigned' if cfg['provider'] == 'local' else 'letsencrypt-prod'
+    # Argo CD is the only service the CLI still installs via Helm (Layer 1);
+    # its own Application takes over management in step 5.
+    argocd_module.install_argocd(ssh, cfg['argocd_domain'], cluster_issuer=cluster_issuer)
+    gitops_module.apply_oci_repo_secret(ssh)
+
+    # Chart-based Applications are self-contained (registry + inline values),
+    # so they can be applied before Forgejo — and thus the gitops repo — exists.
+    # Render inputs are filled in as the wiring steps below produce them.
+    inputs = {'forgejo_version': forgejo_version}
+    gitops_module.apply_apps(ssh, cfg, state, inputs, set(gitops_module.BOOTSTRAP_APPS))
+    gitops_module.wait_for_app(ssh, 'cert-manager')
+    k8s_module.apply_cluster_issuer(ssh, cfg['provider'], authentik_cfg['email'])
+    gitops_module.wait_for_app(ssh, 'forgejo')
+    gitops_module.wait_for_app(ssh, 'authentik', timeout=1200)
 
     # --- Step 4: Configure platform services ---
     click.echo("\n[4/6] Configuring Forgejo, Authentik and SSO...")
@@ -182,8 +174,8 @@ def provision(config_path, provider, forgejo_version, authentik_version, ssh_key
         state['authentik_client_secret'] = client_secret
         secrets_module.save_state(state)
 
-        # --- Step 5: Install Argo CD + runner ---
-        click.echo("\n[5/6] Installing Argo CD, configuring SSO and deploying runner...")
+        # --- Step 5: SSO wiring + remaining Applications ---
+        click.echo("\n[5/6] Wiring k3s/Argo CD SSO and applying remaining Applications...")
         k8s_client_id, k8s_client_secret = authentik_module.configure_k3s_oidc(
             ssh, gen['authentik_bootstrap_token'],
             headlamp_domain=cfg.get('headlamp_domain'),
@@ -191,17 +183,12 @@ def provision(config_path, provider, forgejo_version, authentik_version, ssh_key
         state['k8s_client_id'] = k8s_client_id
         state['k8s_client_secret'] = k8s_client_secret
         secrets_module.save_state(state)
+        inputs['k8s_client_id'] = k8s_client_id
+        inputs['k8s_client_secret'] = k8s_client_secret
         if cfg.get('headlamp_domain'):
-            headlamp_module.install_headlamp(
-                ssh, cfg['headlamp_domain'], authentik_cfg['domain'],
-                k8s_client_id, k8s_client_secret, cluster_issuer=cluster_issuer,
-            )
-            headlamp_module.configure_oidc_rbac(
-                ssh,
-                authentik_cfg.get('groups', authentik_module.DEFAULT_GROUPS),
-                admin_group=authentik_cfg.get('admin_group', 'forgejo-admins'),
-            )
-        argocd_module.install_argocd(ssh, cfg['argocd_domain'], cluster_issuer=cluster_issuer)
+            gitops_module.apply_apps(ssh, cfg, state, inputs, {'headlamp'})
+            gitops_module.wait_for_app(ssh, 'headlamp')
+
         argocd_client_id, _ = argocd_module.configure_argocd_sso(
             ssh,
             gen['authentik_bootstrap_token'],
@@ -213,28 +200,20 @@ def provision(config_path, provider, forgejo_version, authentik_version, ssh_key
         )
         state['argocd_client_id'] = argocd_client_id
         secrets_module.save_state(state)
-        forgejo_module.deploy_runner(
-            ssh,
-            runner_token,
-            # Register on the PUBLIC url, not cluster-internal DNS: CI jobs run as
-            # host-Docker sibling containers (not on the pod network), so the
-            # instance URL leaks into every job's github.server_url and must be
-            # resolvable + reachable from there (checkout, registry, API).
-            forgejo_url=f"https://{forgejo_cfg['domain']}",
-            forgejo_domain=forgejo_cfg['domain'],
-        )
+        inputs['argocd_client_id'] = argocd_client_id
+        # Argo CD manages itself from here; its app sync rolls the server once
+        # (checksum over the now-OIDC-bearing argocd-cm).
+        gitops_module.apply_apps(ssh, cfg, state, inputs, {'argocd'})
+        gitops_module.wait_for_app(ssh, 'argocd')
 
-        if cfg.get('portal_domain'):
-            authentik_module.install_portal_redirect(
-                ssh, cfg['portal_domain'], authentik_cfg['domain'], cluster_issuer=cluster_issuer,
-            )
+        # The runner Deployment comes from git (runner app, step 6); the CLI
+        # only pre-builds the baked CI job image on the host Docker daemon.
+        forgejo_module.build_ci_runner_image(ssh)
 
         if cfg.get('analytics_domain'):
-            analytics_module.install_umami(
-                ssh, cfg['analytics_domain'],
-                gen['umami_db_password'], gen['umami_app_secret'],
-                cluster_issuer=cluster_issuer,
-            )
+            analytics_module.ensure_umami_database(ssh, gen['umami_db_password'])
+            gitops_module.apply_apps(ssh, cfg, state, inputs, {'umami'})
+            gitops_module.wait_for_app(ssh, 'umami')
             # Umami ships a default admin/umami login and has no OIDC to hide behind,
             # so rotate it before the Ingress is reachable from the internet.
             analytics_module.set_admin_password(ssh, gen['umami_admin_password'])
@@ -246,10 +225,18 @@ def provision(config_path, provider, forgejo_version, authentik_version, ssh_key
                 launch_url=f"https://{cfg['analytics_domain']}",
             )
 
-        # --- Step 6: Seed platform-config repository ---
-        click.echo("\n[6/6] Seeding platform-config repository in Forgejo...")
+        # --- Step 6: Seed the platform-config and platform-gitops repositories ---
+        click.echo("\n[6/6] Seeding platform-config and platform-gitops repositories...")
         forgejo_module.create_platform_org(ssh, forgejo_api_token)
         forgejo_module.seed_platform_config(ssh, forgejo_api_token, forgejo_cfg['domain'])
+        # Push the complete gitops tree and apply the root Application: git
+        # becomes the source of truth, and the remaining manifest apps
+        # (cluster-issuer, headlamp-rbac, portal-redirect, runner) sync from it.
+        gitops_module.seed_gitops(ssh, cfg, state)
+        for app_name in ('cluster-issuer', 'headlamp-rbac', 'portal-redirect', 'runner'):
+            if app_name == 'portal-redirect' and not cfg.get('portal_domain'):
+                continue
+            gitops_module.wait_for_app(ssh, app_name)
 
     finally:
         ssh_module.stop_curl_pod(ssh)

@@ -15,3 +15,10 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: argocd
+  syncPolicy:
+    automated:
+      # Pruning here removes a child Application object when its file leaves
+      # git; without a resources-finalizer that detaches (not deletes) its
+      # workloads, which is the intended landing-zone-style behavior.
+      prune: true
+      selfHeal: true
