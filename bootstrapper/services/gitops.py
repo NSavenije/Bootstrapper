@@ -57,6 +57,17 @@ _ARGOCD_IGNORE = (
     "    - /data\n"
 )
 
+# The Bitnami postgres subchart re-generates postgres-password (the disabled
+# superuser) on every `helm template` — nondeterministic renders would flap
+# OutOfSync forever. The live value, created at install, is the real one.
+_AUTHENTIK_IGNORE = (
+    "- kind: Secret\n"
+    "  name: authentik-postgresql\n"
+    "  namespace: authentik\n"
+    "  jsonPointers:\n"
+    "    - /data/postgres-password\n"
+)
+
 
 def _remote_yaml(ssh: paramiko.SSHClient, path: str) -> dict:
     """Read and parse a YAML file the provision run left on the server."""
@@ -152,6 +163,8 @@ def build_files(cfg: dict, state: dict, inputs: dict) -> dict:
             db_password=gen['authentik_db_password'],
             cluster_issuer=cluster_issuer,
         ),
+        extra_sync_options=["RespectIgnoreDifferences=true"],
+        ignore_differences=_AUTHENTIK_IGNORE,
     )
     argocd_values = manifests.render(
         'helm/argocd-values.yaml.j2',
