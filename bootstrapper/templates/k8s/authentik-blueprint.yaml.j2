@@ -1,0 +1,201 @@
+# Authentik blueprint: the platform's SSO wiring, declared (Layer 3a).
+#
+# Replaces the imperative API calls in services/authentik.py: groups, the
+# custom scope mappings, the three OAuth2 providers (pinned client_id AND
+# client_secret — see design doc §4.1), their applications, the Umami
+# bookmark tile, and the akadmin password/email sync.
+#
+# Secrets never appear here: client secrets and the admin password come from
+# the authentik-pinned-clients Secret, exposed to the worker via
+# global.envFrom and referenced with !Env. That keeps this ConfigMap safe to
+# store in git (the platform-gitops repo owns it after seeding).
+#
+# The worker applies mounted blueprints on change; state: present keeps the
+# objects in sync on every apply (an upgrade cannot silently revert them).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: authentik-blueprints
+  namespace: authentik
+data:
+  platform.yaml: |
+    version: 1
+    metadata:
+      name: platform-wiring
+      labels:
+        blueprints.goauthentik.io/description: Platform SSO wiring (bootstrapper)
+    entries:
+      # ---- akadmin: created at Django startup with an unusable password; the
+      # system bootstrap blueprint (state: created) skips it, so own it here.
+      - model: authentik_core.user
+        state: present
+        identifiers:
+          username: akadmin
+        attrs:
+          name: authentik Default Admin
+          email: {{ admin_email }}
+          password: !Env AK_ADMIN_PASSWORD
+
+      # ---- groups (membership is managed elsewhere; only existence is declared)
+{% for group in groups %}
+      - model: authentik_core.group
+        state: present
+        identifiers:
+          name: {{ group }}
+{% endfor %}
+
+      # ---- scope mappings
+      # authentik has no email-verification concept: its built-in email mapping
+      # hardcodes email_verified=false, which kube-apiserver rejects when
+      # --oidc-username-claim=email. Sound to assert true here: addresses are
+      # operator-set, not self-registered. Attached to the kubernetes provider only.
+      - model: authentik_providers_oauth2.scopemapping
+        state: present
+        identifiers:
+          name: "OAuth Mapping: email (verified)"
+        id: scope-email-verified
+        attrs:
+          scope_name: email
+          description: Email claim with email_verified=true, required by kube-apiserver
+          expression: 'return {"email": request.user.email, "email_verified": True}'
+      - model: authentik_providers_oauth2.scopemapping
+        state: present
+        identifiers:
+          name: "authentik default OAuth Mapping: groups"
+        id: scope-groups
+        attrs:
+          scope_name: groups
+          description: Group membership for RBAC in connected applications
+          expression: 'return {"groups": [g.name for g in request.user.ak_groups.all()]}'
+
+      # ---- OAuth2 providers (client_id AND client_secret pinned; grant_types
+      # must be non-empty on 2024.10+ or every /authorize is rejected)
+      - model: authentik_providers_oauth2.oauth2provider
+        state: present
+        identifiers:
+          name: Forgejo
+        id: provider-forgejo
+        attrs:
+          client_type: confidential
+          client_id: forgejo
+          client_secret: !Env FORGEJO_OIDC_CLIENT_SECRET
+          authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-explicit-consent]]
+          invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+          signing_key: !Find [authentik_crypto.certificatekeypair, [name, authentik Self-signed Certificate]]
+          sub_mode: hashed_user_id
+          include_claims_in_id_token: true
+          grant_types:
+            - authorization_code
+            - refresh_token
+          property_mappings:
+            - !Find [authentik_providers_oauth2.scopemapping, [managed, goauthentik.io/providers/oauth2/scope-openid]]
+            - !Find [authentik_providers_oauth2.scopemapping, [managed, goauthentik.io/providers/oauth2/scope-email]]
+            - !Find [authentik_providers_oauth2.scopemapping, [managed, goauthentik.io/providers/oauth2/scope-profile]]
+            - !KeyOf scope-groups
+          redirect_uris:
+            - matching_mode: strict
+              url: https://{{ forgejo_domain }}/user/oauth2/authentik/callback
+      - model: authentik_providers_oauth2.oauth2provider
+        state: present
+        identifiers:
+          name: argocd
+        id: provider-argocd
+        attrs:
+          client_type: confidential
+          client_id: argocd
+          client_secret: !Env ARGOCD_OIDC_CLIENT_SECRET
+          authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-explicit-consent]]
+          invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+          signing_key: !Find [authentik_crypto.certificatekeypair, [name, authentik Self-signed Certificate]]
+          sub_mode: hashed_user_id
+          include_claims_in_id_token: true
+          grant_types:
+            - authorization_code
+            - refresh_token
+          property_mappings:
+            - !Find [authentik_providers_oauth2.scopemapping, [managed, goauthentik.io/providers/oauth2/scope-openid]]
+            - !Find [authentik_providers_oauth2.scopemapping, [managed, goauthentik.io/providers/oauth2/scope-email]]
+            - !Find [authentik_providers_oauth2.scopemapping, [managed, goauthentik.io/providers/oauth2/scope-profile]]
+            - !KeyOf scope-groups
+          redirect_uris:
+            - matching_mode: strict
+              url: https://{{ argocd_domain }}/auth/callback
+      # kubernetes provider: client_id must be the literal "kubernetes" (the
+      # apiserver validates token aud against its hardcoded --oidc-client-id).
+      # Uses the verified-email mapping INSTEAD of the built-in email mapping.
+      # Headlamp reuses this client so its tokens carry the trusted audience.
+      - model: authentik_providers_oauth2.oauth2provider
+        state: present
+        identifiers:
+          name: kubernetes
+        id: provider-kubernetes
+        attrs:
+          client_type: confidential
+          client_id: kubernetes
+          client_secret: !Env K8S_OIDC_CLIENT_SECRET
+          authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-explicit-consent]]
+          invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+          signing_key: !Find [authentik_crypto.certificatekeypair, [name, authentik Self-signed Certificate]]
+          sub_mode: hashed_user_id
+          include_claims_in_id_token: true
+          grant_types:
+            - authorization_code
+            - refresh_token
+          property_mappings:
+            - !Find [authentik_providers_oauth2.scopemapping, [managed, goauthentik.io/providers/oauth2/scope-openid]]
+            - !Find [authentik_providers_oauth2.scopemapping, [managed, goauthentik.io/providers/oauth2/scope-profile]]
+            - !KeyOf scope-email-verified
+            - !KeyOf scope-groups
+          redirect_uris:
+            # kubectl oidc-login (CLI) callback — always present
+            - matching_mode: strict
+              url: http://localhost:8000
+{% if headlamp_domain %}
+            - matching_mode: strict
+              url: https://{{ headlamp_domain }}/oidc-callback
+{% endif %}
+
+      # ---- applications: launch URLs point at each SP's login-initiation
+      # endpoint (OIDC is SP-initiated; an empty launch URL sends users to the
+      # front page without logging them in, which reads as "SSO is broken").
+      - model: authentik_core.application
+        state: present
+        identifiers:
+          slug: forgejo
+        attrs:
+          name: Forgejo
+          provider: !KeyOf provider-forgejo
+          meta_launch_url: https://{{ forgejo_domain }}/user/oauth2/authentik
+      - model: authentik_core.application
+        state: present
+        identifiers:
+          slug: argocd
+        attrs:
+          name: Argo CD
+          provider: !KeyOf provider-argocd
+          meta_launch_url: https://{{ argocd_domain }}/auth/login
+      - model: authentik_core.application
+        state: present
+        identifiers:
+          slug: kubernetes
+        attrs:
+          name: Kubernetes
+          provider: !KeyOf provider-kubernetes
+{% if headlamp_domain %}
+          meta_launch_url: https://{{ headlamp_domain }}
+{% else %}
+          # CLI-only: no browsable UI, hide the tile from the user library
+          meta_launch_url: blank://blank
+{% endif %}
+{% if analytics_domain %}
+      # Umami has no OIDC (OSS edition); surface it as a bookmark tile so it
+      # sits alongside the SSO apps. Users log in with Umami's own credentials.
+      - model: authentik_core.application
+        state: present
+        identifiers:
+          slug: umami
+        attrs:
+          name: Umami
+          meta_launch_url: https://{{ analytics_domain }}
+          open_in_new_tab: true
+{% endif %}

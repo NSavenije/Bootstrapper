@@ -1,0 +1,98 @@
+# Nightly encrypted Postgres dumps to a private GitHub repo (Layer 2, backup).
+#
+# Dumps the authentik and umami databases, gzips, and AES-256 encrypts each
+# with the generated backup key BEFORE it leaves the cluster — DB dumps carry
+# password hashes and OAuth secrets, so nothing lands on GitHub in plaintext.
+# The key lives in the db-backup-credentials Secret (and the operator's state
+# file); losing it makes every backup unreadable, so back the state file up.
+#
+# Restore:
+#   openssl enc -d -aes-256-cbc -pbkdf2 -pass env:BACKUP_KEY -in <file> \
+#     | gunzip | psql -h <host> -U authentik -d <db>
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: db-backup-script
+  namespace: authentik
+data:
+  backup.sh: |
+    #!/bin/sh
+    set -eu
+    apk add --no-cache curl jq openssl >/dev/null
+    GH=https://api.github.com
+    PGHOST=authentik-postgresql.authentik.svc.cluster.local
+    REPO=platform-db-backups
+
+    GH_USER=$(curl -sf -H "Authorization: Bearer $GITHUB_TOKEN" "$GH/user" | jq -r .login)
+    if ! curl -sf -H "Authorization: Bearer $GITHUB_TOKEN" \
+        "$GH/repos/$GH_USER/$REPO" >/dev/null 2>&1; then
+      echo "creating private github repo $REPO"
+      curl -sf -X POST -H "Authorization: Bearer $GITHUB_TOKEN" "$GH/user/repos" \
+        -d "{\"name\":\"$REPO\",\"private\":true,\"description\":\"Encrypted platform DB dumps\"}" >/dev/null
+    fi
+
+    STAMP=$(date +%F-%H%M)
+    for db in authentik umami; do
+      echo "dumping $db..."
+      pg_dump -h "$PGHOST" -U authentik -d "$db" | gzip \
+        | openssl enc -aes-256-cbc -pbkdf2 -pass env:BACKUP_KEY \
+          -out "/tmp/$db.sql.gz.enc"
+      # timestamped path: no overwrite, no sha dance; payload content is fed
+      # from a file (a multi-MB base64 blob in argv exceeds ARG_MAX)
+      path="dumps/$STAMP/$db.sql.gz.enc"
+      base64 -w0 "/tmp/$db.sql.gz.enc" > /tmp/content.b64
+      jq -n --arg msg "backup $STAMP $db" --rawfile content /tmp/content.b64 \
+            '{message: $msg, content: $content}' > /tmp/payload.json
+      code=$(curl -s -o /tmp/resp.json -w '%{http_code}' -X PUT \
+        -H "Authorization: Bearer $GITHUB_TOKEN" \
+        "$GH/repos/$GH_USER/$REPO/contents/$path" \
+        --data-binary @/tmp/payload.json)
+      case "$code" in
+        200|201) echo "uploaded $path" ;;
+        *) echo "ERROR uploading $path (HTTP $code): $(cat /tmp/resp.json)" >&2; exit 1 ;;
+      esac
+    done
+    echo "db backup complete."
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: db-backup
+  namespace: authentik
+spec:
+  schedule: "43 2 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 1200
+      template:
+        metadata:
+          labels:
+            app: db-backup
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: backup
+              image: postgres:17-alpine
+              command: [sh, /scripts/backup.sh]
+              env:
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef: {name: authentik-postgresql, key: password}
+                - name: GITHUB_TOKEN
+                  valueFrom:
+                    secretKeyRef: {name: db-backup-credentials, key: github-token}
+                - name: BACKUP_KEY
+                  valueFrom:
+                    secretKeyRef: {name: db-backup-credentials, key: encryption-key}
+              volumeMounts:
+                - name: script
+                  mountPath: /scripts
+          volumes:
+            - name: script
+              configMap:
+                name: db-backup-script

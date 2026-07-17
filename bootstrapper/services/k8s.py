@@ -58,6 +58,30 @@ def _wait_for_k3s(client: paramiko.SSHClient, timeout: int = 300, interval: int 
     raise TimeoutError(f"k3s node did not become Ready within {timeout}s")
 
 
+def _wait_for_k3s_stable(
+    client: paramiko.SSHClient, timeout: int = 300, interval: int = 5, stable_checks: int = 6,
+) -> None:
+    """Wait until the apiserver answers /readyz repeatedly in a row.
+
+    After k3s-killall.sh + systemctl start, k3s can come up, exit once, and be
+    auto-restarted by systemd ~20s later. Node status also reads stale-Ready in
+    that window, so a single successful poll is not proof of stability; require
+    several consecutive OKs before letting callers exec into pods.
+    """
+    deadline = time.time() + timeout
+    consecutive = 0
+    while time.time() < deadline:
+        try:
+            out = ssh_utils.run(client, "k3s kubectl get --raw /readyz 2>/dev/null")
+            consecutive = consecutive + 1 if out.strip() == 'ok' else 0
+        except RuntimeError:
+            consecutive = 0
+        if consecutive >= stable_checks:
+            return
+        time.sleep(interval)
+    raise TimeoutError(f"k3s apiserver did not stay ready within {timeout}s")
+
+
 def wire_oidc(client: paramiko.SSHClient, authentik_domain: str) -> None:
     """Append OIDC flags to k3s config and restart k3s (idempotent).
 
@@ -88,7 +112,7 @@ def wire_oidc(client: paramiko.SSHClient, authentik_domain: str) -> None:
     click.echo("  Restarting k3s...")
     ssh_utils.run(client, "/usr/local/bin/k3s-killall.sh && systemctl start k3s")
     click.echo("  Waiting for k3s to become ready...")
-    _wait_for_k3s(client)
+    _wait_for_k3s_stable(client)
     # k3s-killall.sh tears down every pod; the API server returns before workloads
     # are back. Wait for Forgejo specifically, since the caller exec's into it next.
     click.echo("  Waiting for Forgejo to restart...")
@@ -100,6 +124,12 @@ _TLS_SECRETS = [
     ("forgejo", "forgejo-tls"),
     ("authentik", "authentik-tls"),
     ("argocd", "argocd-server-tls"),
+    # Every issued cert must survive rebuilds — Let's Encrypt allows only 5
+    # duplicate certificates per exact name per week, and repeated dev-box
+    # rebuilds burn through that fast for any name missing from this list.
+    ("headlamp", "headlamp-tls"),
+    ("authentik", "portal-tls"),
+    ("analytics", "umami-tls"),
 ]
 
 
@@ -154,6 +184,65 @@ def restore_tls_secrets(client: paramiko.SSHClient, saved: dict) -> None:
         )
         ssh_utils.run(client, f"k3s kubectl apply -f {path}")
         click.echo(f"    {name} ({ns}) restored.")
+
+
+def apply_job_manifest(client: paramiko.SSHClient, rendered: str, job_name: str,
+                       namespace: str, timeout: int = 900) -> None:
+    """Apply a manifest containing a Job and wait for the Job to succeed.
+
+    Job pod templates are immutable, so the previous run is deleted first
+    (Argo CD's BeforeHookCreation hook policy does the same on syncs). On
+    failure or timeout the job's pod logs are surfaced.
+    """
+    path = f"{DEPLOY_DIR}/{job_name}.yaml"
+    ssh_utils.run(client, f"mkdir -p {DEPLOY_DIR}")
+    ssh_utils.upload(client, rendered, path)
+    ssh_utils.run(client, f"k3s kubectl delete job {job_name} -n {namespace} --ignore-not-found")
+    ssh_utils.run(client, f"k3s kubectl apply -f {path}")
+    click.echo(f"  Waiting for job {job_name} to complete...")
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        status = ssh_utils.run(
+            client,
+            f"k3s kubectl get job {job_name} -n {namespace} "
+            f"-o jsonpath='{{.status.succeeded}}/{{.status.failed}}' 2>/dev/null || true",
+        ).strip()
+        succeeded, _, failed = status.partition('/')
+        if succeeded.isdigit() and int(succeeded) >= 1:
+            click.echo(f"  Job {job_name} completed.")
+            return
+        if failed.isdigit() and int(failed) >= 5:
+            break
+        time.sleep(10)
+    logs = ssh_utils.run(
+        client,
+        f"k3s kubectl logs -n {namespace} job/{job_name} --tail=40 2>&1 || true",
+    )
+    raise RuntimeError(f"Job {job_name} did not succeed within {timeout}s. Logs:\n{logs}")
+
+
+def apply_cluster_issuer(client: paramiko.SSHClient, provider: str, email: str) -> str:
+    """Apply the ClusterIssuer manifest directly; cert-manager must be running.
+
+    Used by the Argo-CD-era provision flow, where cert-manager itself is
+    deployed by an Application: the issuer needs the CRDs + webhook first, so
+    it is applied right after the cert-manager app reports Healthy. The same
+    manifest is also owned by the cluster-issuer Application once the gitops
+    repo is seeded (identical content — adoption is a no-op).
+    """
+    if provider == 'local':
+        issuer_name = 'selfsigned'
+        rendered = manifests.render('k8s/selfsigned-issuer.yaml.j2')
+    else:
+        issuer_name = 'letsencrypt-prod'
+        rendered = manifests.render('k8s/cluster-issuer.yaml.j2',
+                                    issuer_name=issuer_name, email=email)
+    path = f"{DEPLOY_DIR}/cluster-issuer.yaml"
+    ssh_utils.run(client, f"mkdir -p {DEPLOY_DIR}")
+    ssh_utils.upload(client, rendered, path)
+    ssh_utils.run(client, f"k3s kubectl apply -f {path}")
+    click.echo(f"  ClusterIssuer {issuer_name} applied.")
+    return issuer_name
 
 
 def install_cert_manager_selfsigned(client: paramiko.SSHClient) -> str:

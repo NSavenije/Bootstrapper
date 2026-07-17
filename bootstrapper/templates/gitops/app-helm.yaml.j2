@@ -1,0 +1,38 @@
+# Argo CD Application wrapping a Helm release the bootstrapper used to install.
+# Values are rendered from the same templates the CLI uses, so what Argo CD
+# deploys is byte-identical to what `helm upgrade --install` produced.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: {{ name }}
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: {{ chart_repo }}
+    chart: {{ chart }}
+    targetRevision: "{{ revision }}"
+    helm:
+      # Must equal the CLI-era Helm release name: charts template
+      # app.kubernetes.io/instance from it, and Argo CD tracks by that label.
+      releaseName: {{ release_name }}
+      values: |
+{{ values | indent(8, true) }}
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: {{ namespace }}
+  syncPolicy:
+{% if automated | default(true) %}
+    automated:
+      prune: {{ 'true' if prune | default(true) else 'false' }}
+      selfHeal: true
+{% endif %}
+    syncOptions:
+      - CreateNamespace=true
+{% for opt in extra_sync_options | default([]) %}
+      - {{ opt }}
+{% endfor %}
+{% if ignore_differences %}
+  ignoreDifferences:
+{{ ignore_differences | indent(4, true) }}
+{% endif %}

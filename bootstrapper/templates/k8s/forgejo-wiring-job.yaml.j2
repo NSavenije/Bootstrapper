@@ -1,0 +1,241 @@
+# Residual Forgejo wiring as an idempotent Job (Layer 3b).
+#
+# Runs as an Argo CD PostSync hook of the forgejo-wiring app (and is applied
+# directly by the CLI at bootstrap, before the gitops repo exists). Each run
+# converges and is a no-op when nothing changed:
+#   1. mint/validate the platform API token -> Secrets in argocd namespace
+#      (platform-forgejo-token + the forgejo-repo-creds credential template)
+#   2. ensure the Actions runner registration-token Secret in kube-system
+#   3. write/refresh the Authentik OAuth source in Forgejo (waits for the
+#      blueprint's provider to be discoverable; only touches Forgejo — and
+#      restarts it — when the desired config hash actually changed)
+#
+# Admin credentials come from the chart-managed forgejo-admin Secret; the
+# pinned OIDC client secret from authentik-pinned-clients (copied into this
+# namespace by Layer 1). No value here is generated or read cross-service.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: forgejo-wiring
+  namespace: forgejo
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: forgejo-wiring
+  namespace: forgejo
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list]
+  - apiGroups: [""]
+    resources: [pods/exec]
+    verbs: [create]
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get, create, patch, update]
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [get, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: forgejo-wiring
+  namespace: forgejo
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: forgejo-wiring
+subjects:
+  - kind: ServiceAccount
+    name: forgejo-wiring
+    namespace: forgejo
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: forgejo-wiring
+  namespace: argocd
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get, create, patch, update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: forgejo-wiring
+  namespace: argocd
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: forgejo-wiring
+subjects:
+  - kind: ServiceAccount
+    name: forgejo-wiring
+    namespace: forgejo
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: forgejo-wiring
+  namespace: kube-system
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get, create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: forgejo-wiring
+  namespace: kube-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: forgejo-wiring
+subjects:
+  - kind: ServiceAccount
+    name: forgejo-wiring
+    namespace: forgejo
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: forgejo-wiring-script
+  namespace: forgejo
+data:
+  wire.sh: |
+    #!/bin/sh
+    set -eu
+    FJ=http://forgejo-http.forgejo.svc.cluster.local:3000
+    IAM_INTERNAL=http://authentik-server.authentik.svc.cluster.local
+
+    echo "waiting for forgejo..."
+    until curl -sf "$FJ/api/healthz" >/dev/null; do sleep 5; done
+
+    # --- 1. platform API token -> argocd Secrets -------------------------
+    TOKEN=""
+    if kubectl get secret -n argocd platform-forgejo-token >/dev/null 2>&1; then
+      TOKEN=$(kubectl get secret -n argocd platform-forgejo-token -o jsonpath='{.data.token}' | base64 -d)
+      curl -sf -H "Authorization: token $TOKEN" "$FJ/api/v1/user" >/dev/null || TOKEN=""
+    fi
+    if [ -z "$TOKEN" ]; then
+      echo "minting platform API token..."
+      curl -s -o /dev/null -X DELETE -u "$ADMIN_USER:$ADMIN_PASS" \
+        "$FJ/api/v1/users/$ADMIN_USER/tokens/platform-argocd" || true
+      TOKEN=$(curl -sf -u "$ADMIN_USER:$ADMIN_PASS" -X POST \
+        "$FJ/api/v1/users/$ADMIN_USER/tokens" \
+        -H 'Content-Type: application/json' \
+        -d '{"name":"platform-argocd","scopes":["write:organization","write:repository","write:user","write:admin"]}' \
+        | jq -r .sha1)
+    fi
+    kubectl create secret generic platform-forgejo-token -n argocd \
+      --from-literal=token="$TOKEN" --dry-run=client -o yaml | kubectl apply -f -
+    kubectl create secret generic forgejo-repo-creds -n argocd \
+      --from-literal=type=git \
+      --from-literal=url="https://$FORGEJO_DOMAIN/" \
+      --from-literal=username="$ADMIN_USER" \
+      --from-literal=password="$TOKEN" \
+      --dry-run=client -o yaml | kubectl apply -f -
+    kubectl label secret forgejo-repo-creds -n argocd \
+      argocd.argoproj.io/secret-type=repo-creds --overwrite
+    echo "argocd credentials ensured."
+
+    # --- 2. Actions runner registration token ---------------------------
+    if ! kubectl get secret -n kube-system forgejo-runner-token >/dev/null 2>&1; then
+      echo "fetching runner registration token..."
+      RTOKEN=$(curl -sf -H "Authorization: token $TOKEN" \
+        "$FJ/api/v1/admin/runners/registration-token" | jq -r .token)
+      kubectl create secret generic forgejo-runner-token -n kube-system \
+        --from-literal=token="$RTOKEN"
+    fi
+    echo "runner token ensured."
+
+    # --- 3. Authentik OAuth source (hash-gated: update + restart only on change)
+    echo "waiting for the blueprint's forgejo provider..."
+    until curl -sf "$IAM_INTERNAL/application/o/forgejo/.well-known/openid-configuration" >/dev/null; do sleep 5; done
+
+    DISCOVER="https://$AUTHENTIK_DOMAIN/application/o/forgejo/.well-known/openid-configuration"
+    WANT_HASH=$(printf '%s|%s|%s|%s|%s' \
+      forgejo "$FORGEJO_OIDC_CLIENT_SECRET" "$DISCOVER" "$ADMIN_GROUP" v1 \
+      | sha256sum | cut -d' ' -f1)
+    HAVE_HASH=$(kubectl get secret -n forgejo forgejo-oauth-source-state \
+      -o jsonpath='{.data.hash}' 2>/dev/null | base64 -d || true)
+    if [ "$WANT_HASH" = "$HAVE_HASH" ]; then
+      echo "oauth source up to date."
+      exit 0
+    fi
+
+    # the public discovery URL must answer before Forgejo will accept it
+    until curl -skf "$DISCOVER" >/dev/null; do
+      echo "waiting for public discovery URL $DISCOVER..."; sleep 10
+    done
+
+    POD=$(kubectl get pods -n forgejo -l app.kubernetes.io/name=forgejo \
+      -o jsonpath='{.items[0].metadata.name}')
+    FLAGS="--provider openidConnect --key forgejo --secret $FORGEJO_OIDC_CLIENT_SECRET \
+      --auto-discover-url $DISCOVER --scopes 'openid email profile groups' \
+      --group-claim-name groups --admin-group $ADMIN_GROUP"
+    EXISTING=$(kubectl exec -n forgejo "$POD" -- forgejo admin auth list 2>/dev/null \
+      | awk '$2=="authentik" {print $1}' | head -1)
+    if [ -n "$EXISTING" ]; then
+      echo "updating auth source id=$EXISTING..."
+      kubectl exec -n forgejo "$POD" -- sh -c "forgejo admin auth update-oauth --id $EXISTING $FLAGS"
+      # update-oauth writes behind the provider cache; restart to reload
+      kubectl rollout restart deploy/forgejo -n forgejo
+    else
+      echo "adding auth source..."
+      kubectl exec -n forgejo "$POD" -- sh -c "forgejo admin auth add-oauth --name authentik $FLAGS"
+    fi
+    kubectl create secret generic forgejo-oauth-source-state -n forgejo \
+      --from-literal=hash="$WANT_HASH" --dry-run=client -o yaml | kubectl apply -f -
+    echo "oauth source converged."
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: forgejo-wiring
+  namespace: forgejo
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 4
+  activeDeadlineSeconds: 900
+  template:
+    metadata:
+      labels:
+        app: forgejo-wiring
+    spec:
+      serviceAccountName: forgejo-wiring
+      restartPolicy: OnFailure
+      containers:
+        - name: wire
+          image: alpine/k8s:1.33.1
+          command: [sh, /scripts/wire.sh]
+          env:
+            - name: FORGEJO_DOMAIN
+              value: "{{ forgejo_domain }}"
+            - name: AUTHENTIK_DOMAIN
+              value: "{{ authentik_domain }}"
+            - name: ADMIN_GROUP
+              value: "{{ admin_group }}"
+            - name: ADMIN_USER
+              valueFrom:
+                secretKeyRef: {name: forgejo-admin, key: username}
+            - name: ADMIN_PASS
+              valueFrom:
+                secretKeyRef: {name: forgejo-admin, key: password}
+            - name: FORGEJO_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef: {name: authentik-pinned-clients, key: FORGEJO_OIDC_CLIENT_SECRET}
+          volumeMounts:
+            - name: script
+              mountPath: /scripts
+      volumes:
+        - name: script
+          configMap:
+            name: forgejo-wiring-script

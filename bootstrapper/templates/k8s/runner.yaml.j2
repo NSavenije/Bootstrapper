@@ -25,14 +25,8 @@ data:
         GITEA_SERVER_URL: "https://{{ forgejo_domain }}"
         GITHUB_SERVER_URL: "https://{{ forgejo_domain }}"
 ---
-apiVersion: v1
-kind: Secret
-metadata:
-  name: forgejo-runner-token
-  namespace: kube-system
-stringData:
-  token: "{{ runner_token }}"
----
+# The forgejo-runner-token Secret is created by the forgejo-wiring Job
+# (kube-system), so no registration token ever lands in this manifest/git.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:

@@ -15,6 +15,92 @@ DEFAULT_GROUPS = [
 ]
 
 _BASE = "http://authentik-server.authentik.svc.cluster.local/api/v3"
+_SERVER = "http://authentik-server.authentik.svc.cluster.local"
+
+# Pinned OIDC client ids: human-readable, stable across rebuilds, and (for
+# kubernetes) required to match the apiserver's hardcoded --oidc-client-id.
+# The matching client secrets are the *_oidc_client_secret generated secrets.
+OIDC_CLIENT_IDS = {"forgejo": "forgejo", "argocd": "argocd", "kubernetes": "kubernetes"}
+
+
+def render_blueprint(cfg: dict) -> str:
+    """Render the platform-wiring blueprint ConfigMap (no secrets inside)."""
+    authentik_cfg = cfg['authentik']
+    return manifests.render(
+        'k8s/authentik-blueprint.yaml.j2',
+        admin_email=authentik_cfg['email'],
+        groups=authentik_cfg.get('groups', DEFAULT_GROUPS),
+        forgejo_domain=cfg['forgejo']['domain'],
+        argocd_domain=cfg['argocd_domain'],
+        headlamp_domain=cfg.get('headlamp_domain'),
+        analytics_domain=cfg.get('analytics_domain'),
+    )
+
+
+def apply_wiring_manifests(ssh: paramiko.SSHClient, cfg: dict, gen: dict) -> None:
+    """Apply the pinned-clients Secret and blueprint ConfigMap (pre-chart).
+
+    Both must exist before the authentik Application deploys: the worker
+    mounts the ConfigMap and reads the Secret via envFrom. The Secret is
+    Layer 1 (never in git); the ConfigMap is also git-owned after seeding.
+    """
+    click.echo("  Applying Authentik pinned-clients Secret and platform blueprint...")
+    ssh_utils.run(
+        ssh,
+        "k3s kubectl create namespace authentik --dry-run=client -o yaml"
+        " | k3s kubectl apply -f -",
+    )
+    ssh_utils.run(ssh, f"mkdir -p {helm_module.DEPLOY_DIR}")
+    # The forgejo-wiring Job (forgejo namespace) reads the pinned Forgejo
+    # client secret too; Secrets are namespace-scoped, so apply a copy there.
+    for ns in ('authentik', 'forgejo'):
+        ssh_utils.run(
+            ssh,
+            f"k3s kubectl create namespace {ns} --dry-run=client -o yaml"
+            f" | k3s kubectl apply -f -",
+        )
+        pinned = manifests.render(
+            'k8s/authentik-pinned-clients.yaml.j2',
+            namespace=ns,
+            admin_password=cfg['authentik']['admin_password'],
+            forgejo_oidc_client_secret=gen['forgejo_oidc_client_secret'],
+            argocd_oidc_client_secret=gen['argocd_oidc_client_secret'],
+            k8s_oidc_client_secret=gen['k8s_oidc_client_secret'],
+        )
+        path = f"{helm_module.DEPLOY_DIR}/authentik-pinned-clients-{ns}.yaml"
+        ssh_utils.upload(ssh, pinned, path)
+        ssh_utils.run(ssh, f"k3s kubectl apply -f {path}")
+    ssh_utils.upload(ssh, render_blueprint(cfg), f"{helm_module.DEPLOY_DIR}/authentik-blueprint.yaml")
+    ssh_utils.run(ssh, f"k3s kubectl apply -f {helm_module.DEPLOY_DIR}/authentik-blueprint.yaml")
+
+
+def wait_for_blueprint(ssh: paramiko.SSHClient, slugs: list[str],
+                       timeout: int = 300, interval: int = 10) -> None:
+    """Wait until the platform blueprint has been applied by the worker.
+
+    Uses only unauthenticated reads: each provider slug's OIDC discovery
+    endpoint answers 200 once its provider + application exist, which is
+    exactly the wiring the blueprint declares. No API token involved.
+    """
+    click.echo(f"  Waiting for Authentik blueprint (providers: {', '.join(slugs)})...")
+    deadline = time.time() + timeout
+    pending = list(slugs)
+    while time.time() < deadline:
+        still = []
+        for slug in pending:
+            try:
+                r = ssh_utils.cluster_curl(
+                    ssh, f"{_SERVER}/application/o/{slug}/.well-known/openid-configuration")
+                if r.status_code != 200:
+                    still.append(slug)
+            except RuntimeError:
+                still.append(slug)
+        pending = still
+        if not pending:
+            click.echo("  Blueprint applied: all providers discoverable.")
+            return
+        time.sleep(interval)
+    raise TimeoutError(f"Blueprint providers not discoverable within {timeout}s: {pending}")
 
 
 def install_authentik(

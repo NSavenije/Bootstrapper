@@ -2,6 +2,18 @@ global:
   env:
     - name: AUTHENTIK_HOST
       value: https://{{ domain }}
+  # Pinned SSO credentials for the platform blueprint's !Env references
+  # (Secret is applied by the CLI before this chart — Layer 1, not in git).
+  envFrom:
+    - secretRef:
+        name: authentik-pinned-clients
+
+# Declarative platform wiring (providers, groups, mappings, tiles, akadmin).
+# The ConfigMap is applied by the CLI before this chart and git-owned after
+# seeding; the worker discovers and applies every *.yaml key in it.
+blueprints:
+  configMaps:
+    - authentik-blueprints
 
 authentik:
   secret_key: {{ secret_key }}

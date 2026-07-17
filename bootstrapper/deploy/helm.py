@@ -45,6 +45,23 @@ def upgrade_install(
     ssh_utils.run(client, f"mkdir -p {DEPLOY_DIR}")
     ssh_utils.upload(client, values_yaml, values_path)
 
+    # A release whose FIRST install failed (e.g. bad image tag, mid-run crash) has
+    # no deployed revision, and `helm upgrade --install` refuses it. Uninstall the
+    # failed transaction so re-running provision can recover unattended.
+    status_cmd = (
+        f"helm status {release} --kubeconfig {KUBECONFIG} --namespace {namespace} "
+        f"-o yaml 2>/dev/null | grep -E '^  (status|first_deployed):' || true"
+    )
+    status_out = ssh_utils.run(client, status_cmd)
+    if 'status: failed' in status_out or 'status: pending-install' in status_out:
+        history_cmd = (
+            f"helm history {release} --kubeconfig {KUBECONFIG} --namespace {namespace} "
+            f"2>/dev/null | grep -c deployed || true"
+        )
+        if ssh_utils.run(client, history_cmd).strip() == '0':
+            click.echo(f"  Release {release} has a failed initial install; removing it before retry.")
+            ssh_utils.run(client, f"helm uninstall {release} --kubeconfig {KUBECONFIG} --namespace {namespace}")
+
     parts = [
         f"helm upgrade --install {release} {chart}",
         f"--kubeconfig {KUBECONFIG}",

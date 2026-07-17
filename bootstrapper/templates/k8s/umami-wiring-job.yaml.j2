@@ -1,0 +1,81 @@
+# Umami admin-password rotation as an idempotent Job (Layer 3b).
+#
+# Umami ships a default admin/umami login and has no bootstrap env var, so
+# the password must be rotated after first boot. Runs as a PostSync hook of
+# the umami-wiring app (and directly at bootstrap): if the desired password
+# already works it exits 0; if the default still works it rotates; otherwise
+# it fails loudly (password was hand-changed — never guess).
+# The desired password comes from the umami-admin-credentials Secret (Layer 1).
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: umami-wiring-script
+  namespace: analytics
+data:
+  rotate.sh: |
+    #!/bin/sh
+    set -eu
+    UMAMI=http://umami.analytics.svc.cluster.local:3000
+
+    echo "waiting for umami..."
+    until curl -sf "$UMAMI/api/heartbeat" >/dev/null; do sleep 5; done
+
+    login() {
+      curl -s -o /tmp/login.json -w '%{http_code}' -X POST "$UMAMI/api/auth/login" \
+        -H 'Content-Type: application/json' \
+        -d "{\"username\":\"admin\",\"password\":$1}"
+    }
+    json_pw() { printf '"%s"' "$1"; }
+
+    if [ "$(login "$(json_pw "$NEW_PASSWORD")")" = "200" ]; then
+      echo "admin password already set."
+      exit 0
+    fi
+    if [ "$(login '"umami"')" != "200" ]; then
+      echo "ERROR: neither the generated nor the default password works;" \
+           "the admin password was changed by hand. Refusing to guess." >&2
+      exit 1
+    fi
+    TOKEN=$(sed -n 's/.*"token":"\([^"]*\)".*/\1/p' /tmp/login.json)
+    CODE=$(curl -s -o /tmp/change.json -w '%{http_code}' -X POST "$UMAMI/api/me/password" \
+      -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+      -d "{\"currentPassword\":\"umami\",\"newPassword\":$(json_pw "$NEW_PASSWORD")}")
+    if [ "$CODE" != "200" ]; then
+      echo "ERROR: password change failed (HTTP $CODE): $(cat /tmp/change.json)" >&2
+      exit 1
+    fi
+    echo "admin password rotated."
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: umami-wiring
+  namespace: analytics
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 4
+  activeDeadlineSeconds: 600
+  template:
+    metadata:
+      labels:
+        app: umami-wiring
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: rotate
+          image: alpine/k8s:1.33.1
+          command: [sh, /scripts/rotate.sh]
+          env:
+            - name: NEW_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: umami-admin-credentials, key: password}
+          volumeMounts:
+            - name: script
+              mountPath: /scripts
+      volumes:
+        - name: script
+          configMap:
+            name: umami-wiring-script

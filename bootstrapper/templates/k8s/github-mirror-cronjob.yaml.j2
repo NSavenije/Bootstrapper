@@ -1,0 +1,125 @@
+# GitHub push-mirror sync (Layer 2, backup path).
+#
+# Forgejo itself pushes every repo to a private GitHub mirror on each commit
+# (sync_on_commit) — this CronJob only reconciles the wiring: it discovers
+# all Forgejo repos nightly, creates a private GitHub repo for any that lack
+# one (forgejo-<owner>-<name>), and registers the push mirror. New repos are
+# therefore mirrored within a day, existing ones in near-real-time.
+#
+# Credentials: github-mirror-credentials (Layer 1, from config
+# github_mirror_token) and the platform token the forgejo-wiring Job minted.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: github-mirror
+  namespace: forgejo
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: github-mirror
+  namespace: argocd
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    resourceNames: [platform-forgejo-token]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: github-mirror
+  namespace: argocd
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: github-mirror
+subjects:
+  - kind: ServiceAccount
+    name: github-mirror
+    namespace: forgejo
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: github-mirror-script
+  namespace: forgejo
+data:
+  mirror.sh: |
+    #!/bin/sh
+    set -eu
+    FJ=http://forgejo-http.forgejo.svc.cluster.local:3000
+    GH=https://api.github.com
+
+    GH_USER=$(curl -sf -H "Authorization: Bearer $GITHUB_TOKEN" "$GH/user" | jq -r .login)
+    FJ_TOKEN=$(kubectl get secret -n argocd platform-forgejo-token -o jsonpath='{.data.token}' | base64 -d)
+    echo "mirroring to github.com/$GH_USER (private repos)"
+
+    page=1
+    while :; do
+      repos=$(curl -sf -H "Authorization: token $FJ_TOKEN" \
+        "$FJ/api/v1/repos/search?limit=50&page=$page" \
+        | jq -c '.data[] | {owner: .owner.username, name: .name}')
+      [ -z "$repos" ] && break
+      echo "$repos" | while read -r r; do
+        owner=$(echo "$r" | jq -r .owner); name=$(echo "$r" | jq -r .name)
+        gh_repo="forgejo-$owner-$name"
+        if ! curl -sf -H "Authorization: Bearer $GITHUB_TOKEN" \
+            "$GH/repos/$GH_USER/$gh_repo" >/dev/null 2>&1; then
+          echo "creating private github repo $gh_repo"
+          curl -sf -X POST -H "Authorization: Bearer $GITHUB_TOKEN" "$GH/user/repos" \
+            -d "{\"name\":\"$gh_repo\",\"private\":true,\"description\":\"Backup mirror of $owner/$name\"}" >/dev/null
+        fi
+        if ! curl -sf -H "Authorization: token $FJ_TOKEN" \
+            "$FJ/api/v1/repos/$owner/$name/push_mirrors" \
+            | jq -e ".[] | select(.remote_address | contains(\"/$gh_repo.git\"))" >/dev/null 2>&1; then
+          echo "registering push mirror $owner/$name -> $gh_repo"
+          curl -sf -X POST -H "Authorization: token $FJ_TOKEN" \
+            -H 'Content-Type: application/json' \
+            "$FJ/api/v1/repos/$owner/$name/push_mirrors" \
+            -d "{\"remote_address\":\"https://github.com/$GH_USER/$gh_repo.git\",\"remote_username\":\"$GH_USER\",\"remote_password\":\"$GITHUB_TOKEN\",\"interval\":\"8h0m0s\",\"sync_on_commit\":true}" >/dev/null
+          curl -sf -X POST -H "Authorization: token $FJ_TOKEN" \
+            "$FJ/api/v1/repos/$owner/$name/push_mirrors-sync" >/dev/null
+        fi
+      done
+      page=$((page+1))
+    done
+    echo "mirror sync complete."
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: github-mirror
+  namespace: forgejo
+spec:
+  schedule: "17 3 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 900
+      template:
+        metadata:
+          labels:
+            app: github-mirror
+        spec:
+          serviceAccountName: github-mirror
+          restartPolicy: OnFailure
+          containers:
+            - name: mirror
+              image: alpine/k8s:1.33.1
+              command: [sh, /scripts/mirror.sh]
+              env:
+                - name: GITHUB_TOKEN
+                  valueFrom:
+                    secretKeyRef: {name: github-mirror-credentials, key: token}
+              volumeMounts:
+                - name: script
+                  mountPath: /scripts
+          volumes:
+            - name: script
+              configMap:
+                name: github-mirror-script

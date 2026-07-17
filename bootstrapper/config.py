@@ -30,6 +30,8 @@ def load(config_path: str | None, overrides: dict | None) -> dict:
     cfg.setdefault('headlamp_domain', None)  # optional; enables the Headlamp k8s UI
     cfg.setdefault('portal_domain', None)    # optional; friendly redirect to the Authentik dashboard
     cfg.setdefault('analytics_domain', None)  # optional; enables Umami cookieless analytics
+    # optional; enables GitHub push-mirrors + encrypted DB dumps (private repos)
+    cfg.setdefault('github_mirror_token', None)
 
     # Local-provider defaults: no cloud token/key needed; SSH user may differ from root
     if cfg['provider'] == 'local':

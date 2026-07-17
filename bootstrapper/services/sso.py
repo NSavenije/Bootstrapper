@@ -1,9 +1,39 @@
+import re
 import shlex
+import time
 
 import click
 import paramiko
 
 from bootstrapper.deploy import ssh as ssh_utils
+
+
+def _wait_for_discovery(ssh: paramiko.SSHClient, url: str, timeout: int = 180) -> None:
+    """Poll the OIDC discovery URL until it answers 200.
+
+    Forgejo validates the URL when the auth source is written, so a
+    still-restarting Authentik (e.g. right after wire-k3s-oidc's k3s restart)
+    fails the whole command with a 503. The poll runs curl on the host, which
+    cannot resolve cluster DNS — for .svc.cluster.local URLs, probe the
+    service's ClusterIP instead (routable from the k3s node).
+    """
+    probe = url
+    m = re.match(r'(https?)://([a-z0-9-]+)\.([a-z0-9-]+)\.svc\.cluster\.local(/.*)', url)
+    if m:
+        scheme, svc, ns, path = m.groups()
+        cluster_ip = ssh_utils.run(
+            ssh, f"k3s kubectl get svc -n {ns} {svc} -o jsonpath='{{.spec.clusterIP}}'",
+        ).strip()
+        probe = f"{scheme}://{cluster_ip}{path}"
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        code = ssh_utils.run(
+            ssh, f"curl -sk -o /dev/null -w '%{{http_code}}' {shlex.quote(probe)} || true",
+        ).strip()
+        if code == "200":
+            return
+        time.sleep(5)
+    raise TimeoutError(f"OIDC discovery URL not ready within {timeout}s: {probe}")
 
 
 def configure_forgejo_oauth_source(
@@ -28,6 +58,8 @@ def configure_forgejo_oauth_source(
         discover_url = f"https://{authentik_domain}/application/o/forgejo/.well-known/openid-configuration"
     else:
         discover_url = "http://authentik-server.authentik.svc.cluster.local/application/o/forgejo/.well-known/openid-configuration"
+
+    _wait_for_discovery(ssh, discover_url)
 
     oauth_flags = (
         f" --provider openidConnect"
@@ -64,6 +96,12 @@ def configure_forgejo_oauth_source(
             inner_cmd.encode(),
         )
         click.echo(f"  Updated existing 'authentik' auth source (id={existing_id}).")
+        # The CLI writes the DB behind the running server's provider registry;
+        # unlike an add, an update (e.g. new client_id/secret) is not picked up
+        # until restart — Forgejo would keep sending the old client_id.
+        click.echo("  Restarting Forgejo to reload the updated auth source...")
+        ssh_utils.run(ssh, "k3s kubectl rollout restart deploy/forgejo -n forgejo")
+        ssh_utils.run(ssh, "k3s kubectl rollout status deploy/forgejo -n forgejo --timeout=180s")
     else:
         inner_cmd = "forgejo admin auth add-oauth --name authentik" + oauth_flags + "\n"
         ssh_utils.run_with_stdin(
